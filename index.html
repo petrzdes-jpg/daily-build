@@ -371,6 +371,13 @@
   .scheme-file{ width:96px; height:96px; border-radius:8px; border:1px solid var(--line); background:var(--surface-2); display:flex; flex-direction:column; align-items:center; justify-content:center; gap:6px; font-size:10px; color:var(--text-muted); text-align:center; padding:6px; overflow:hidden; }
   .scheme-file span{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:100%; }
   .qe-banner{ background:var(--surface-2); border:1px solid var(--line); border-radius:8px; padding:10px 13px; font-size:12px; margin-bottom:12px; }
+.qe-multi-row{ display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
+.qe-multi-chip{ display:inline-flex; align-items:center; gap:5px; padding:4px 10px; border-radius:20px;
+  border:1px solid var(--line); background:var(--surface-2); color:var(--text); font-size:11.5px;
+  cursor:pointer; white-space:nowrap; }
+.qe-multi-chip:hover{ border-color:var(--amber); }
+.qe-multi-chip.cur{ border-color:var(--green); color:var(--green); }
+
   .qe-banner.ret{ background:var(--red-dim,rgba(220,80,80,.12)); border-color:var(--red); }
   .qe-table{ width:100%; border-collapse:collapse; font-size:12.5px; }
   .qe-table th{ text-align:left; font-size:10.5px; letter-spacing:0.05em; text-transform:uppercase; color:var(--text-muted); font-weight:600; padding:0 8px 7px 0; white-space:nowrap; }
@@ -835,8 +842,15 @@
   /* Пока открыто любое модальное окно, страница под ним не прокручивается (класс ставит
      syncPageScrollLock). overscroll-behavior:contain не даёт прокрутке «перетечь» на
      страницу, когда содержимое окна докручено до края. */
-  body.modal-open{ overflow:hidden; }
-  .sheet, .screen.screen-popup, .ov-panel, .sfm-body{ overscroll-behavior:contain; }
+  /* Открытое окно НЕ блокирует прокрутку страницы (было body.modal-open{overflow:hidden} —
+     именно из-за него страница переставала прокручиваться, пока открыто любое окно).
+     Класс .modal-open сохранён как признак состояния для скриптов, но прокрутку он
+     больше не отключает: колесо над содержимым окна прокручивает окно, колесо вне
+     его прокручиваемой области — страницу. Разделяет эти два случая не скрипт, а
+     overscroll-behavior:contain на КАЖДОМ прокручиваемом контейнере окна: прокрутка,
+     начатая внутри окна, не «перетекает» на страницу, когда содержимое кончилось. */
+  .sheet, .screen.screen-popup, .ov-panel, .sfm-body, .sfm-pane,
+  .gv-modal, .gv-scroll, .scheme-full-modal, .notif-panel{ overscroll-behavior:contain; }
   .overlay{ position:fixed; inset:0; background:rgba(10,11,12,0.55); opacity:0; pointer-events:none; transition:opacity .3s ease; z-index:40;}
   .overlay.show{ opacity:1; pointer-events:auto;}
   /* Центрированное модальное окно (не выезжающая снизу панель) — размер подгоняется под
@@ -1353,8 +1367,8 @@
       <!-- Стрелка «назад» убрана: «График» — основная вкладка навигации, а не вложенный
            экран, и стрелка рядом с ней выбивалась из общего вида вкладок. -->
       <div>
-        <div class="subhead-title">График проекта</div>
-        <div class="subhead-sub"><span class="obj-name">БЦ «Огни»</span> · график реализации проекта · сегодня — <span id="ganttSubheadDateVal">18.08.2026</span></div>
+        <div class="subhead-title">График производства работ</div>
+        <div class="subhead-sub"><span class="obj-name">БЦ «Огни»</span> · график производства работ по проекту · сегодня — <span id="ganttSubheadDateVal">18.08.2026</span></div>
       </div>
     </div>
     <div id="ganttEditBar" style="margin-bottom:12px;"></div>
@@ -2190,6 +2204,7 @@ function closeNotifPanel(){
   const p = document.getElementById('notifPanel'); if(p) p.classList.remove('show');
   window.__notifNewAtOpen = null;
   document.removeEventListener('mousedown', notifOutside, true);
+  if(typeof syncPageScrollLock==='function') syncPageScrollLock();
 }
 function notifOutside(ev){
   const p = document.getElementById('notifPanel'), b = document.getElementById('navbarBell');
@@ -2227,6 +2242,7 @@ function handleBellClick(){
       <span class="nt-close" onclick="closeNotifPanel()">✕</span></div>
     <div class="nt-body">${notifPanelHTML()}</div>`;
   panel.classList.add('show');
+  if(typeof syncPageScrollLock==='function') syncPageScrollLock();
   setTimeout(()=>document.addEventListener('mousedown', notifOutside, true), 0);
   notifMarkSeen();
   if(currentUser.role==='responsible') markDecisionsSeen();
@@ -2486,6 +2502,50 @@ function mgmtKpiRowHTML(){
 }
 /* Ближайшие предстоящие работы — формируются из ГПР автоматически, вручную ничего не
    прописано: берутся работы, чьё плановое начало ещё впереди, в порядке дат. */
+/* ================= ЕДИНЫЙ ГРАФИК ПРОИЗВОДСТВА РАБОТ ВО ВСЕХ РАЗДЕЛАХ =================
+   ГПР показывается в трёх местах — на рабочем столе, в «Общей информации» и полным
+   экраном/окном. Раньше каждое место собирало заголовок и кнопку у себя: на рабочем
+   столе «Полный график» открывал экран, в «Общей информации» — окно просмотра, а сам
+   экран назывался «График проекта», хотя это тот же самый график. Отсюда единое
+   название и единая сборка блока: правка в одном месте видна во всех разделах,
+   отдельной версии ГПР больше нигде не появляется.
+   Состав и логика графика не менялись — он как был, так и остаётся компактным
+   gprTimelineHTML() из общего справочника работ. */
+const GPR_TITLE = 'График производства работ';
+/* Кнопка «Полный график» одна на всё приложение. Показывает она ОДИН И ТОТ ЖЕ график из
+   одного справочника работ; различается только оболочка, и различается по назначению
+   раздела, а не по месту нажатия: «Общая информация» — раздел просмотра, там открывается
+   окно просмотра графика; на рабочем столе и в карточках — рабочий экран графика.
+   В режиме «Просмотр» строка вкладок скрыта целиком, поэтому наблюдателю везде
+   открывается окно просмотра. */
+function openGprFull(mode){
+  const viewer = !!currentUser && currentUser.role==='viewer';
+  if(mode==='viewer' || viewer){ if(typeof openGanttViewer==='function') openGanttViewer(); return; }
+  if(typeof showScreen==='function') showScreen('gantt');
+}
+/* Один блок ГПР для рабочего стола и «Общей информации»: заголовок, кнопка полного
+   графика, строка ближайших работ и сам график. Отличается только оформление заголовка,
+   принятое в разделе, — содержимое и поведение одинаковые. */
+function gprCardHTML(opts){
+  opts = opts || {};
+  const title = opts.title || GPR_TITLE;
+  const up = upcomingWorksLine();
+  const act = `openGprFull(${opts.full==='viewer' ? "'viewer'" : ''})`;
+  const head = opts.heading==='section'
+    ? `<div class="section-label" style="display:flex; justify-content:space-between; align-items:center;">
+         <h2>${title}</h2>
+         <div class="sch-btn" onclick="${act}">Полный график</div>
+       </div>`
+    : `<div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap;">
+         <div class="dcard-title" style="margin:0;">${title}</div>
+         <div class="sch-btn" onclick="${act}">Полный график</div>
+       </div>`;
+  const body = `${up?`<div class="dcard-sub" style="margin:${opts.heading==='section'?'0 0 4px':'6px 0 2px'};">${up}</div>`:''}
+    ${gprTimelineHTML()}`;
+  return opts.heading==='section'
+    ? head + `<div class="plan-card">${body}</div>`
+    : head + body;
+}
 function upcomingWorksLine(){
   const up = schedOrderedTasks().filter(t=>!archivedWorkTypes[t.id] && !hasChildren(t.id))
     .filter(t=>{ const d=taskDates(t); return d.start && new Date(d.start) > TODAY; })
@@ -2587,16 +2647,7 @@ function renderDashboardScreen(){
   const dwEl = document.getElementById('dwSummary');
   if(dwEl) dwEl.innerHTML = (typeof dwSummaryHTML==='function') ? dwSummaryHTML() : '';
   const gpr = document.getElementById('dashGprCard');
-  if(gpr){
-    const up = upcomingWorksLine();
-    gpr.innerHTML = `
-      <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap;">
-        <div class="dcard-title" style="margin:0;">График производства работ</div>
-        <div class="sch-btn" onclick="showScreen('gantt')">Полный график</div>
-      </div>
-      ${up?`<div class="dcard-sub" style="margin:6px 0 2px;">${up}</div>`:''}
-      ${gprTimelineHTML()}`;
-  }
+  if(gpr) gpr.innerHTML = gprCardHTML();
   renderDashTopRow();
   renderDashMidRow();
   renderDashBotRow();
@@ -2684,7 +2735,7 @@ function renderDashMidRow(){
   el.innerHTML = '';
   el.style.display = 'none';
 }
-/* ---- Мини-сводка «Текущие работы» в карточке «График проекта» на рабочем столе ----
+/* ---- Мини-сводка «Текущие работы» в карточке графика производства работ ----
    По прямому указанию: компактная визуализация того, что выполняется прямо сейчас — какие
    работы идут, на каком они этапе, какие участки задействованы. Именно мини-график, а не
    вторая полноценная страница: одна строка на работу, полоса выполнения по своему объёму
@@ -2738,9 +2789,9 @@ function dashCurrentWorksHTML(){
 function renderDashBotRow(){
   const el = document.getElementById('dashBotRow'); if(!el) return;
   el.innerHTML = `
-    <div class="dcard" style="cursor:pointer;" onclick="showScreen('gantt')">
-      <div class="dcard-title">График проекта</div>
-      <div class="dcard-sub">MS Project · сроки по видам работ, план и факт</div>
+    <div class="dcard" style="cursor:pointer;" onclick="openGprFull()">
+      <div class="dcard-title">${GPR_TITLE}</div>
+      <div class="dcard-sub">сроки по видам работ, план и факт</div>
       ${dashCurrentWorksHTML()}
       <div class="dcard-link">Открыть график →</div>
     </div>
@@ -2768,9 +2819,33 @@ function drDate(){
   if(!window.__drDate) window.__drDate = todayISO();
   return window.__drDate;
 }
+/* Какой именно отчёт выбранной даты открыт на правку. Пусто — вносится новый.
+   Для техзаказчика за дату существует не больше одного отчёта, поэтому указатель для
+   него ничего не меняет: drEntry() как и раньше отдаёт единственную запись даты. */
+window.__drEntryId = null;
 function drEntry(){
+  if(window.__drEntryId){
+    const i = findEntryIndexById(dailyLog, window.__drEntryId);
+    if(i>=0 && dailyLog.entries[i].date===drDate()) return dailyLog.entries[i];
+    window.__drEntryId = null;
+  }
   const i = findEntryIndexByDate(dailyLog, drDate());
   return i>=0 ? dailyLog.entries[i] : null;
+}
+/* Все отчёты выбранной даты — для панели директора «отчётов за дату: N». */
+function drEntriesOfDate(){ return entriesForDate(dailyLog, drDate()).map(x=>x.e); }
+/* Директор открывает конкретный отчёт даты на правку либо начинает новый (id=null). */
+function drOpenEntry(id){
+  if(!canAddMoreEntriesPerDay()) return;
+  window.__drEntryId = id || null;
+  window.__qeDraft = {};
+  if(id){
+    const e = drEntry();
+    if(e && e.custom){ Object.keys(e.custom).forEach(k=>{ window.__qeDraft[k] = {val: Number(e.custom[k])||0}; }); }
+    if(e && e.soil) window.__qeDraft['soil'] = {val: Number(e.soil)||0};
+  }
+  if(typeof renderQuickEntry==='function') renderQuickEntry();
+  if(typeof renderDailyReportScreen==='function') renderDailyReportScreen();
 }
 function drStashDrafts(){
   window.__drDrafts[drDate()] = {
@@ -3126,7 +3201,8 @@ function renderQuickEntry(){
   const numericRows = rows.filter(r=>r.numeric);
   const bodyHTML = rows.map(r=>{
     const d = window.__qeDraft[r.key] || {};
-    const dec = r.unit==='шт.' ? 0 : 1;
+    /* Единый формат объёмов 0,00 (кроме штучного учёта — там дробей не бывает). */
+    const dec = r.unit==='шт.' ? 0 : VOL_DEC;
     const num = (v,unit) => v==null ? '—' : fmtNum(v,dec).replace('.',',')+(unit?' '+unit:'');
     if(r.kind==='percent'){
       return `<tr>
@@ -3160,13 +3236,14 @@ function renderQuickEntry(){
            не заводится. */
         const per = dailyNormFor(r.key);
         if(per==null) return num(r.plan, r.unit);
-        return `${fmtNum(per, per<10?2:1).replace('.',',')} ${r.unit}/дн.`;
+        return `${fmtNum(per, VOL_DEC).replace('.',',')} ${r.unit}/дн.`;
       })()}</td>
       <td class="qe-num">${num(r.done, r.unit)}</td>
       <td class="qe-num">${num(r.remain, r.unit)}</td>
       <td>
-        <input type="number" class="qe-input" id="qe-val-${defSlug(r.key)}" placeholder="0" value="${d.val!=null?d.val:''}"
-          oninput="qeOnInput('${r.key}')" onkeydown="if(event.key==='Enter'){event.preventDefault();qeFocusNext('${r.key}');}">
+        <input type="text" inputmode="decimal" class="qe-input" id="qe-val-${defSlug(r.key)}" placeholder="0,00" value="${d.val!=null?volInputVal(d.val):''}"
+          oninput="qeOnInput('${r.key}')" onblur="volFieldNormalize(this);qeOnInput('${r.key}')"
+          onkeydown="if(event.key==='Enter'){event.preventDefault();qeFocusNext('${r.key}');}">
         <span class="qe-sub">${r.unit}</span>
         <span class="qe-flag" id="qe-flag-${defSlug(r.key)}"></span>
       </td>
@@ -3174,14 +3251,28 @@ function renderQuickEntry(){
     </tr>`;
   }).join('');
   /* Отчёт за сегодня уже есть? Тогда второй не создаётся. «Возвращён» — единственный
-     случай, когда ввод остаётся открытым: правится та же запись (см. upsertDailyEntry). */
+     случай, когда ввод остаётся открытым: правится та же запись (см. upsertDailyEntry).
+     У директора ограничения на количество отчётов за дату нет: панель ниже показывает
+     все отчёты этой даты, любой можно открыть на правку, и всегда доступен новый. */
+  const multi = canAddMoreEntriesPerDay();
   const todayE = drEntry();
-  const locked = !!todayE && todayE.status!=='returned';
+  const dayEntries = multi ? drEntriesOfDate() : [];
+  const editingId = multi ? window.__drEntryId : null;
+  const locked = multi ? false : (!!todayE && todayE.status!=='returned');
   const lastReturn = todayE ? (todayE.statusHistory||[]).slice().reverse().find(h=>h.status==='returned') : null;
-  const stateBanner = !todayE ? '' : (todayE.status==='returned'
+  const multiBanner = !multi ? '' : `<div class="qe-banner">
+      Отчётов за ${fmtDate(drDate())}: <b>${dayEntries.length}</b>. Для директора по строительству ограничения на количество отчётов за дату нет — каждый правится отдельно и не перезаписывает остальные.
+      <div class="qe-multi-row">
+        <span class="qe-multi-chip ${editingId?'':'cur'}" onclick="drOpenEntry(null)">+ Новый отчёт за эту дату</span>
+        ${dayEntries.map((e,i)=>`<span class="qe-multi-chip ${editingId===entryUid(e)?'cur':''}"
+            onclick="drOpenEntry('${entryUid(e)}')" title="${(e.comment||'').replace(/"/g,'&quot;')}">Отчёт №${i+1} · ${fmtTime(e.ts)} · ${entryStatusMeta(e.status||'review').label.toLowerCase()}</span>`).join('')}
+      </div>
+      ${editingId?`<div class="qe-hint" style="margin-top:6px;">Правится уже созданный отчёт — сохранение изменит именно его.</div>`:(dayEntries.length?`<div class="qe-hint" style="margin-top:6px;">Будет создан ещё один отчёт за эту дату.</div>`:'')}
+    </div>`;
+  const stateBanner = multi ? multiBanner : (!todayE ? '' : (todayE.status==='returned'
     ? `<div class="qe-banner ret">Отчёт возвращён директором${lastReturn&&lastReturn.comment?`: «${lastReturn.comment}»`:''} — скорректируйте данные и отправьте повторно. Новый отчёт не создаётся.</div>`
     : `<div class="qe-banner">Отчёт за ${fmtDate(drDate())} уже создан — ${entryStatusMeta(todayE.status||'review').label.toLowerCase()}. Второй отчёт за эту дату не создаётся.
-        <span class="qe-el-link" onclick="openReportsScreen()">Открыть отчёт →</span></div>`);
+        <span class="qe-el-link" onclick="openReportsScreen()">Открыть отчёт →</span></div>`));
   el.innerHTML = `
     <div class="qe-card">
       <div class="qe-head">
@@ -3222,11 +3313,13 @@ function qeOnInput(key, silent){
   const row = rowsAll.find(r=>r.key===key); if(!row) return;
   const rawVal = input.value.trim();
   const d = window.__qeDraft[key] = window.__qeDraft[key] || {};
-  d.val = rawVal===''? null : (Number(rawVal)||0);
+  /* Разбор через ту же parseVolNum, что и в остальных разделах: «12,50» и «12.50» —
+     одно и то же число, дробная часть не теряется. */
+  d.val = rawVal===''? null : (parseVolNum(rawVal) ?? 0);
   const flag = document.getElementById('qe-flag-'+slug);
   const wrap = document.getElementById('qe-reason-wrap-'+slug);
   const rate = qeDailyPlanRate(row);
-  const dec = row.unit==='шт.' ? 0 : 1;
+  const dec = row.unit==='шт.' ? 0 : VOL_DEC;
   if(rawVal!=='' && d.val===0){
     if(flag){ flag.style.color='var(--text-muted)'; flag.textContent='работа сегодня не выполнялась'; }
     if(wrap && !wrap.querySelector('select')){
@@ -3331,7 +3424,7 @@ function renderElSheet(){
         <div class="lbl" style="margin-bottom:8px; font-size:11.5px;">Добавить элемент в справочник</div>
         <div class="edit-grid" style="grid-template-columns:1fr ${def.countOnly?'':'120px '}auto; margin-bottom:0;">
           <input type="text" id="el-new-label" placeholder="Обозначение (напр. Уч-1)" style="${resRowFieldStyle()}">
-          ${def.countOnly?'':`<input type="number" id="el-new-vol" placeholder="Объём, ${def.unit}" style="${resRowFieldStyle()}">`}
+          ${def.countOnly?'':`<input type="text" inputmode="decimal" id="el-new-vol" placeholder="Объём, ${def.unit}" onblur="volFieldNormalize(this)" style="${resRowFieldStyle()}">`}
           <div class="btn ghost" onclick="elAddCatalogElement()">+ Добавить</div>
         </div>
         <div class="save-msg" id="el-new-msg"></div>
@@ -3417,7 +3510,7 @@ async function elAddCatalogElement(){
   const volInput = document.getElementById('el-new-vol');
   const label = (labelInput.value||'').trim();
   if(!label){ if(msgEl){ msgEl.className='save-msg err'; msgEl.textContent='Укажите обозначение элемента.'; } return; }
-  const vol = def.countOnly ? 1 : (Number(volInput && volInput.value)||0);
+  const vol = def.countOnly ? 1 : (parseVolNum(volInput && volInput.value) ?? 0);
   if(!def.countOnly && !vol){ if(msgEl){ msgEl.className='save-msg err'; msgEl.textContent='Укажите объём элемента, '+(def.unit||'')+'.'; } return; }
   const cw = customWorkTypes[def.taskId]; if(!cw) return;
   const id = 'e'+Date.now()+Math.random().toString(36).slice(2,5);
@@ -4152,6 +4245,12 @@ function fmtDate(iso){
   if(!iso) return '—';
   const d = new Date(iso);
   return d.toLocaleDateString('ru-RU', {day:'2-digit', month:'2-digit', year:'numeric'});
+}
+/* Только время записи — для списка отчётов одной даты у директора. */
+function fmtTime(iso){
+  if(!iso) return '—';
+  const d = new Date(iso);
+  return isNaN(d) ? '—' : d.toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'});
 }
 function fmtDateTime(iso){
   const d = new Date(iso);
@@ -4973,6 +5072,35 @@ function findEntryIndexByDate(log, date){
   for(let i=0;i<arr.length;i++){ if(arr[i].date===date && !arr[i].baseline) return i; }
   return -1;
 }
+/* ================= НЕСКОЛЬКО ОТЧЁТОВ ЗА ОДНУ ДАТУ (ДИРЕКТОР) =================
+   Ограничение «один отчёт за календарную дату» задумано для техзаказчика и остаётся
+   для него в силе. Директору по строительству оно снято: он может внести за один день
+   любое число отчётов и править каждый отдельно.
+   Отдельного журнала для этого не заводится — записи лежат в том же dailyLog.entries,
+   которые уже суммируются по всем записям (computeDelta и остальные расчёты никогда не
+   брали «одну запись за дату»), поэтому связанные разделы и аналитика учитывают их без
+   изменений. Чтобы отчёты одной даты можно было различать и править по отдельности,
+   каждой записи присваивается устойчивый идентификатор. */
+function entryUid(e){
+  if(!e) return '';
+  if(!e.id) e.id = 'de' + (e.ts || new Date().toISOString()).replace(/\D/g,'').slice(0,17)
+                 + Math.random().toString(36).slice(2,6);
+  return e.id;
+}
+/* Все действующие (не «исходные данные») отчёты за дату, по времени внесения. */
+function entriesForDate(log, date){
+  return ((log && log.entries) || [])
+    .map((e,i)=>({e,i}))
+    .filter(x=>x.e.date===date && !x.e.baseline)
+    .sort((a,b)=> String(a.e.ts||'').localeCompare(String(b.e.ts||'')));
+}
+function findEntryIndexById(log, id){
+  const arr = (log && log.entries) || [];
+  for(let i=0;i<arr.length;i++){ if(arr[i] && arr[i].id===id) return i; }
+  return -1;
+}
+/* Директор не ограничен одним отчётом в дату — остальные роли ограничены как раньше. */
+function canAddMoreEntriesPerDay(){ return typeof isDirector==='function' && isDirector(); }
 function todayEntry(){
   const i = findEntryIndexByDate(dailyLog, todayISO());
   return i>=0 ? dailyLog.entries[i] : null;
@@ -4980,6 +5108,9 @@ function todayEntry(){
 /* Можно ли сейчас вносить данные за сегодня: либо отчёта ещё нет, либо он возвращён на
    доработку (тогда правим его же). */
 function canSubmitToday(){
+  /* Директор вносит отчёты без ограничения по количеству за дату (см.
+     canAddMoreEntriesPerDay) — форма ввода ему открыта всегда. */
+  if(canAddMoreEntriesPerDay()) return true;
   const e = (typeof drEntry==='function') ? drEntry() : todayEntry();
   return !e || e.status==='returned';
 }
@@ -4990,27 +5121,61 @@ async function upsertDailyEntry(payload){
   const user = (currentUser && currentUser.name) || ROLE_LABELS[(currentUser||{}).role] || '';
   let log = (await getOverride('daily-log')) || {entries:[]};
   log.entries = log.entries || [];
-  const idx = findEntryIndexByDate(log, date);
+  const byDate = findEntryIndexByDate(log, date);
   const nowTs = new Date().toISOString();
+  const director = canAddMoreEntriesPerDay();
+  /* Директор правит КОНКРЕТНЫЙ отчёт, если он его открыл (__entryId), иначе вносит
+     новый — уже существующие записи за эту дату при этом не перезаписываются. */
+  let idx = byDate;
+  if(payload.__entryId){
+    const byId = findEntryIndexById(log, payload.__entryId);
+    if(byId < 0) return {ok:false, error:'Отчёт не найден — возможно, он был удалён.'};
+    idx = byId;
+  } else if(director && byDate >= 0){
+    idx = -1;                        // директор добавляет ещё один отчёт за ту же дату
+  }
   if(idx < 0){
-    const entry = Object.assign({}, payload, {
-      date, user, ts:nowTs, status:'review', directorEdited:false,
-      statusHistory:[{ts:nowTs, user, status:'review', comment: payload.__submitComment || 'Отправлено на проверку'}]
+    /* Отчёт, внесённый директором по строительству, согласовывать не у кого — он сразу
+       учитывается в расчётах (тот же принцип, что у исходных данных при настройке
+       проекта, см. saveSetupBaseline). Отчёт техзаказчика, как и раньше, уходит на
+       проверку со статусом «на проверке». */
+      const entry = Object.assign({}, payload, {
+      date, user, ts:nowTs,
+      status: director ? 'approved' : 'review',
+      directorEdited:false,
+      statusHistory:[{ts:nowTs, user, status: director?'approved':'review',
+        comment: payload.__submitComment || (director
+          ? (byDate>=0 ? 'Дополнительный отчёт за эту дату, внесён директором по строительству'
+                       : 'Внесён директором по строительству')
+          : 'Отправлено на проверку')}]
     });
     delete entry.__submitComment;
+    delete entry.__entryId;
+    entryUid(entry);
     log.entries.push(entry);
     if(!(await setOverride('daily-log', log))) return {ok:false, error:storageErrorMessage()};
     dailyLog = log;
-    return {ok:true, mode:'created'};
+    return {ok:true, mode:'created', id:entry.id};
   }
   const e = log.entries[idx];
-  if(e.status!=='returned'){
+  if(e.status!=='returned' && !(director && payload.__entryId)){
     return {ok:false, alreadyExists:true, status:e.status||'review',
       error:`Отчёт за ${fmtDate(date)} уже создан (${entryStatusMeta(e.status||'review').label.toLowerCase()}). Второй отчёт за эту дату не создаётся.`};
   }
   /* Возвращённый отчёт — правим существующую запись, не создавая новую. Сохраняем всё,
-     что не пришло в payload (фото, ресурсы, ранее внесённые данные), и дополняем историю. */
-  Object.keys(payload).forEach(k=>{ if(k!=='date' && k!=='__submitComment') e[k] = payload[k]; });
+     что не пришло в payload (фото, ресурсы, ранее внесённые данные), и дополняем историю.
+     Тот же путь используется, когда директор открыл на правку конкретный свой отчёт. */
+  const editingOwn = director && payload.__entryId;
+  Object.keys(payload).forEach(k=>{ if(k!=='date' && k!=='__submitComment' && k!=='__entryId') e[k] = payload[k]; });
+  entryUid(e);
+  if(editingOwn){
+    e.statusHistory = e.statusHistory || [];
+    e.statusHistory.push({ts:nowTs, user, status:e.status||'approved',
+      comment: payload.__submitComment || 'Отчёт скорректирован директором по строительству'});
+    if(!(await setOverride('daily-log', log))) return {ok:false, error:storageErrorMessage()};
+    dailyLog = log;
+    return {ok:true, mode:'updated', id:e.id};
+  }
   e.status = 'review';
   e.directorEdited = false;
   e.statusHistory = e.statusHistory || [];
@@ -5912,7 +6077,7 @@ function reportRowHTML(e, idx, opts){
         ${editing ? `
         <div class="edit-form" style="display:block;">
           <div class="edit-grid">
-            <div class="edit-field"><label>Грунт вывезено, м³</label><input type="number" id="re-soil-${idx}" value="${e.soil||0}"></div>
+            <div class="edit-field"><label>Грунт вывезено, м³</label><input type="text" inputmode="decimal" id="re-soil-${idx}" value="${volInputVal(e.soil||0)}" onblur="volFieldNormalize(this)"></div>
           </div>
           <div style="font-size:11px;color:var(--text-muted);margin:-4px 0 10px;">Готовность по захваткам/сваям, внесённую в этой записи, можно скорректировать только через отклонение отчёта («✕ Отклонить») — техзаказчик заново выберет нужный элемент и подаст актуальные данные (см. п.5 требования: повторная подача не блокируется).</div>
           <textarea class="edit-comment" id="re-comment-${idx}" placeholder="Комментарий">${e.comment||''}</textarea>
@@ -5935,7 +6100,7 @@ function toggleReportEdit(idx){ window.__reportEditOpen[idx] = !window.__reportE
 async function saveReportEdit(idx){
   let log = (await getOverride('daily-log')) || {entries:[]};
   const e = log.entries[idx]; if(!e) return;
-  const get = id => Number(document.getElementById(id).value)||0;
+  const get = id => volFieldNum(id) ?? 0;
   const newVals = { soil:get('re-soil-'+idx), comment: document.getElementById('re-comment-'+idx).value.trim() };
   const changed = e.soil!==newVals.soil || (e.comment||'')!==newVals.comment;
   const isDirector = window.isDirector();   // включая представителя техзаказчика с расширенными правами
@@ -7687,6 +7852,84 @@ async function applyProjectImport(){
 }
 
 /* =====================================================================================
+   ОТКАТ РАСШИРЕННОГО ПЕРЕНОСА ГПР (одноразово)
+   =====================================================================================
+   Развёрнутая структура из файла календарного плана (388 работ, 8 уровней) оказалась
+   слишком объёмной и по прямому указанию отменена целиком: приложение возвращается к
+   прежнему, компактному графику производства работ и прежним контрольным точкам.
+
+   Код переноса удалён, но у того, кто уже открывал приложение, результат лежит в
+   браузере — поэтому откат не «удаление файла», а обратная операция по тем же
+   хранилищам, в которые перенос писал: extraTasks, worktype-meta, gantt:<id>,
+   customwt:<id>, schedule-links, milestones, worktype-sections, archived-worktypes.
+
+   Что сохраняется без изменений: сами работы приложения и их данные — объёмы, единицы,
+   факт, элементы, история. Перенос их не создавал и не удалял, он только менял им
+   наименование, родителя, порядок и сроки; всё это возвращается к прежним значениям
+   базовым переносом applyProjectImport, версия которого поднимается вместе с откатом. */
+const GPR_UNDO_VERSION = 'gpr-undo-2026-08-28';
+const GPR_UNDO_WORKS = ["g1", "g10", "g100", "g101", "g102", "g105", "g106", "g109", "g11", "g12", "g124", "g125", "g127", "g128", "g13", "g130", "g131", "g133", "g134", "g137", "g138", "g139", "g14", "g140", "g141", "g142", "g143", "g144", "g145", "g146", "g147", "g148", "g149", "g15", "g150", "g151", "g152", "g153", "g154", "g155", "g156", "g157", "g158", "g159", "g16", "g160", "g161", "g162", "g163", "g164", "g165", "g166", "g167", "g168", "g169", "g17", "g170", "g171", "g172", "g173", "g174", "g175", "g176", "g177", "g178", "g179", "g18", "g180", "g181", "g182", "g183", "g184", "g185", "g186", "g187", "g188", "g189", "g19", "g190", "g191", "g192", "g193", "g194", "g195", "g196", "g197", "g198", "g199", "g2", "g20", "g200", "g201", "g202", "g203", "g204", "g205", "g206", "g207", "g208", "g209", "g21", "g210", "g211", "g212", "g213", "g214", "g215", "g216", "g217", "g218", "g219", "g22", "g220", "g221", "g222", "g223", "g224", "g225", "g226", "g227", "g228", "g229", "g23", "g230", "g231", "g232", "g233", "g234", "g235", "g236", "g237", "g238", "g239", "g24", "g240", "g241", "g242", "g243", "g244", "g245", "g246", "g247", "g248", "g249", "g25", "g250", "g251", "g257", "g258", "g259", "g26", "g260", "g261", "g262", "g263", "g264", "g265", "g266", "g267", "g268", "g269", "g27", "g270", "g271", "g272", "g273", "g274", "g275", "g276", "g277", "g278", "g279", "g28", "g280", "g281", "g282", "g283", "g284", "g285", "g286", "g287", "g288", "g289", "g29", "g290", "g291", "g292", "g293", "g294", "g295", "g296", "g297", "g298", "g299", "g3", "g30", "g300", "g301", "g302", "g303", "g304", "g305", "g306", "g307", "g308", "g309", "g31", "g310", "g311", "g312", "g313", "g314", "g315", "g316", "g317", "g318", "g319", "g32", "g320", "g321", "g322", "g323", "g324", "g325", "g326", "g327", "g328", "g329", "g33", "g330", "g331", "g332", "g333", "g334", "g335", "g336", "g337", "g338", "g339", "g34", "g340", "g341", "g342", "g343", "g344", "g345", "g346", "g347", "g348", "g349", "g35", "g350", "g351", "g352", "g353", "g354", "g355", "g356", "g357", "g358", "g359", "g36", "g360", "g361", "g362", "g363", "g364", "g365", "g366", "g367", "g368", "g369", "g37", "g370", "g38", "g39", "g4", "g40", "g41", "g42", "g43", "g44", "g45", "g46", "g47", "g48", "g49", "g5", "g50", "g51", "g52", "g53", "g54", "g55", "g56", "g57", "g58", "g59", "g6", "g60", "g61", "g62", "g63", "g64", "g65", "g66", "g68", "g69", "g7", "g70", "g71", "g72", "g725", "g726", "g727", "g728", "g729", "g73", "g730", "g731", "g732", "g733", "g734", "g735", "g736", "g737", "g738", "g74", "g740", "g741", "g742", "g743", "g744", "g745", "g746", "g747", "g748", "g749", "g75", "g750", "g751", "g752", "g753", "g77", "g78", "g8", "g89", "g9", "g96", "g97", "g98", "g99"];
+const GPR_UNDO_MS = ["gm95", "gm107", "gm119", "gm739", "gm754", "gm755"];
+const GPR_UNDO_ARCHIVED = ["t13", "t14", "p37prep", "p37pod", "p37snos", "p37ogr", "p37zem", "p37svai", "p37fund", "p37konstr", "p37nad", "t2", "t28", "x37kr", "x37per", "x37okna", "x37fas", "x37krov", "x37tk", "x37otd", "x37vis", "x37nis", "x37pnr", "x37blag", "x37vvod"];
+const GPR_UNDO_TOUCHED = ["t1", "t10", "t11", "t12", "t15", "t16", "t18", "t19", "t20", "t21", "t22", "t23", "t24", "t25", "t26", "t27", "t29", "t3", "t30", "t31", "t32", "t33", "t34", "t35", "t36", "t37", "t4", "t5", "t6", "t7", "t8", "t9", "x37bur", "x37fdem", "x37gas", "x37rasp"];
+async function undoGprImport(){
+  const state = await getOverride('gpr-import-version');
+  const undone = await getOverride('gpr-undo-version');
+  if(undone && undone.version === GPR_UNDO_VERSION) return false;
+  if(!state){                                   // перенос здесь никогда не выполнялся
+    await setOverride('gpr-undo-version', {version:GPR_UNDO_VERSION, ts:new Date().toISOString()});
+    return false;
+  }
+  const gset = {}; GPR_UNDO_WORKS.forEach(id=>{ gset[id]=true; });
+
+  // 1. Работы, созданные переносом, — из графика, реестра и их собственных записей.
+  for(const id of GPR_UNDO_WORKS){
+    await deleteOverride('gantt:'+id);
+    await deleteOverride('customwt:'+id);
+    delete customWorkTypes[id];
+    delete workTypeMeta[id];
+    delete wtSections[id];
+    delete ganttOverrides[id];
+    delete volumePlans[id];
+    if(workSelection) delete workSelection[id];
+  }
+  extraTasks = extraTasks.filter(e=>!gset[e.id]);
+  await setOverride('extra-tasks', extraTasks);
+  syncExtraTasksIntoGantt();
+
+  // 2. Связи, добавленные переносом (их идентификаторы начинаются с 'lg').
+  scheduleLinks = scheduleLinks.filter(l=>String(l.id||'').slice(0,2)!=='lg' && !gset[l.from] && !gset[l.to]);
+  await setOverride('schedule-links', scheduleLinks);
+
+  // 3. Контрольные точки — прежний перечень проекта (MILESTONES_BASE).
+  const msDone = {};
+  (milestones||[]).forEach(m=>{ if(m.done) msDone[m.id] = m.doneDate || ''; });
+  milestones = MILESTONES_BASE.map(m=>Object.assign({done:!!msDone[m.id], doneDate:msDone[m.id]||''}, m,
+    msDone[m.id]!==undefined ? {done:true, doneDate:msDone[m.id]} : {}));
+  await msSave();
+
+  // 4. Работы, отправленные переносом в архив, возвращаются в состав.
+  archivedWorkTypes = (await getOverride('archived-worktypes')) || archivedWorkTypes || {};
+  GPR_UNDO_ARCHIVED.forEach(id=>{
+    const rec = archivedWorkTypes[id];
+    if(rec && rec.user==='Перенос ГПР') delete archivedWorkTypes[id];
+  });
+  await setOverride('archived-worktypes', archivedWorkTypes);
+
+  // 5. Видимость по разделам, выставленная переносом сопоставленным работам, снимается —
+  //    у них снова обычное состояние «во всех разделах», как было до переноса.
+  GPR_UNDO_TOUCHED.forEach(id=>{ delete wtSections[id]; });
+  await setOverride('worktype-sections', wtSections);
+
+  // 6. Прежние наименования, иерархия, порядок и сроки возвращаются базовым переносом:
+  //    сбрасываем его отметку версии, чтобы он выполнился заново на этой же базе.
+  await deleteOverride('project-import-version');
+  await deleteOverride('gpr-import-version');
+  await setOverride('gpr-undo-version', {version:GPR_UNDO_VERSION, ts:new Date().toISOString()});
+  return true;
+}
+
+/* =====================================================================================
    СНЯТИЕ УНАСЛЕДОВАННЫХ ФАКТИЧЕСКИХ ЗНАЧЕНИЙ (одноразово)
    =====================================================================================
    Раньше при переносе исходных материалов вместе с плановыми данными подставлялись и
@@ -8493,19 +8736,10 @@ function ovSummaryHTML(sec){
 }
 /* Блок 2 — компактный график: ближайшие и критические работы, без второй большой страницы. */
 function ovScheduleHTML(sec){
-  const title = (sec && sec.title) || 'График производства работ';
-  /* Линейный график производства работ с линией «Сегодня» — тот же компонент, что и на
-     рабочем столе (gprTimelineHTML), плюс динамическая строка «Ближайшие» из ГПР. */
-  const up = upcomingWorksLine();
-  return `
-    <div class="section-label" style="display:flex; justify-content:space-between; align-items:center;">
-      <h2>${title}</h2>
-      <div class="sch-btn" onclick="openGanttViewer()">Полный график</div>
-    </div>
-    <div class="plan-card">
-      ${up?`<div class="dcard-sub" style="margin:0 0 4px;">${up}</div>`:''}
-      ${gprTimelineHTML()}
-    </div>`;
+  /* Тот же блок, что и на рабочем столе (gprCardHTML) — второй версии ГПР здесь нет.
+     Заголовок раздела директор может переименовать в настройке «Общей информации»;
+     если он этого не делал, используется общее название графика. */
+  return gprCardHTML({heading:'section', full:'viewer', title:(sec && sec.title) || GPR_TITLE});
 }
 function renderOverviewScreen(){
   const el = document.getElementById('ovBody'); if(!el) return;
@@ -9183,7 +9417,7 @@ async function vpSetTotal(taskId, total, unit){
 async function vpSetWeekVol(taskId, idx, vol){
   if(!schedGuard()) return;
   const vp = vpGet(taskId); if(!vp || !vp.weeks[idx]) return;
-  vp.weeks[idx].vol = Math.max(0, Number(vol)||0);
+  vp.weeks[idx].vol = Math.max(0, parseVolNum(vol) ?? 0);
   vp.weeks[idx].manual = true;
   vp.manual = true;                       // авто-пересчёт больше не затирает ручную раскладку
   await vpSave();
@@ -9241,7 +9475,7 @@ function vpOpenDialog(taskId){
     <div class="sheet-top"><div class="sheet-title">Объём: ${t.name}</div><div class="sheet-close" onclick="closeSheet()">✕</div></div>
     <div class="sheet-comment" style="margin-bottom:12px;">Период по графику: ${d.start?fmtDate(d.start):'—'} → ${d.end?fmtDate(d.end):'—'}</div>
     <div class="edit-grid" style="grid-template-columns:1fr 120px auto; margin-bottom:12px;">
-      <div class="edit-field"><label>Общий объём по виду работ</label><input type="number" id="vp-total" value="${total}"></div>
+      <div class="edit-field"><label>Общий объём по виду работ</label><input type="text" inputmode="decimal" id="vp-total" value="${volInputVal(total)}" placeholder="0,00" onblur="volFieldNormalize(this)"></div>
       <div class="edit-field"><label>Ед. изм.</label>
         <select id="vp-unit">${['м³','м²','п.м.','шт.','т'].map(u=>`<option value="${u}" ${u===unit?'selected':''}>${u}</option>`).join('')}</select>
       </div>
@@ -9255,7 +9489,7 @@ function vpOpenDialog(taskId){
           ${weeks.map((w,i)=>`<tr>
             <td class="qe-num">${fmtDate(w.start).slice(0,5)}–${fmtDate(w.end).slice(0,5)}</td>
             <td class="qe-num">${w.wd}</td>
-            <td><input type="number" class="qe-input" style="width:96px;" value="${w.vol}" onchange="vpSetWeekVol('${taskId}',${i},this.value).then(()=>vpOpenDialog('${taskId}'))"></td>
+            <td><input type="text" inputmode="decimal" class="qe-input" style="width:96px;" value="${volInputVal(w.vol)}" onchange="vpSetWeekVol('${taskId}',${i},this.value).then(()=>vpOpenDialog('${taskId}'))"></td>
             <td class="qe-num">${w.wd?fmtNum(w.vol/w.wd,1).replace('.',','):'—'}</td>
           </tr>`).join('')}
           <tr><td><b>Итого</b></td><td></td><td class="qe-num"><b style="color:${Math.abs(sum-(vp?vp.total:0))<0.5?'var(--green)':'var(--red)'};">${fmtNum(sum,1).replace('.',',')}</b></td><td></td></tr>
@@ -9275,7 +9509,7 @@ async function vpRedistributeAndShow(taskId){
                         : 'Распределить нельзя: у работы не задан общий объём или период по графику.'; }
 }
 async function vpSubmitTotal(taskId){
-  const total = Number((document.getElementById('vp-total')||{}).value)||0;
+  const total = volFieldNum('vp-total') ?? 0;
   const unit = (document.getElementById('vp-unit')||{}).value || '';
   if(total<=0) return;
   await vpSetTotal(taskId, total, unit);
@@ -10177,7 +10411,9 @@ function openGanttViewer(){
   }
   window.__gvOpen = true;
   ov.style.display = 'flex';
-  document.body.classList.add('modal-open');
+  /* Через ту же единую точку, что и остальные окна, — свой класс на body окно больше
+     не ставит, иначе его состояние расходилось бы с общим реестром. */
+  if(typeof syncPageScrollLock==='function') syncPageScrollLock();
   renderGanttViewer();
   /* Esc закрывает окно; обработчик снимается при закрытии, чтобы не накапливаться при
      повторных открытиях. */
@@ -10189,7 +10425,7 @@ function closeGanttViewer(){
   if(ov) ov.style.display = 'none';
   window.__gvOpen = false;
   if(window.__gvEsc){ document.removeEventListener('keydown', window.__gvEsc); window.__gvEsc = null; }
-  if(typeof syncPageScrollLock==='function') syncPageScrollLock(); else document.body.classList.remove('modal-open');
+  if(typeof syncPageScrollLock==='function') syncPageScrollLock();
 }
 function gvSetFilter(key, val){
   window.__gvFilters[key] = val;
@@ -10569,8 +10805,8 @@ function renderCustomBody(taskId){
         </select>
       </div>
       <div class="edit-grid">
-        <div class="edit-field"><label>Плановое значение</label><input type="number" id="cw-planvol" value="${cw.planVol||''}" ${isPctUnit?'disabled':''}></div>
-        <div class="edit-field"><label>Разовая корректировка факта</label><input type="number" id="cw-factbase" value="${cw.factVolBase||0}"></div>
+        <div class="edit-field"><label>Плановое значение</label><input type="text" inputmode="decimal" id="cw-planvol" value="${volInputVal(cw.planVol)}" placeholder="0,00" onblur="volFieldNormalize(this)" ${isPctUnit?'disabled':''}></div>
+        <div class="edit-field"><label>Разовая корректировка факта</label><input type="text" inputmode="decimal" id="cw-factbase" value="${volInputVal(cw.factVolBase||0)}" onblur="volFieldNormalize(this)"></div>
       </div>
       <div class="btn primary" style="width:100%;" onclick="saveCustomVolume('${taskId}')">Сохранить</div><div class="save-msg" id="cw-msg"></div></div>` : ''}`;
   }
@@ -10623,8 +10859,9 @@ async function saveCustomPct(taskId){
 async function saveCustomVolume(taskId){
   const unit = document.getElementById('cw-unit').value;
   const isPctUnit = unit==='%';
-  const planVol = isPctUnit ? '' : document.getElementById('cw-planvol').value.trim();
-  const factBase = Number(document.getElementById('cw-factbase').value)||0;
+  const planVolNum = isPctUnit ? null : volFieldNum('cw-planvol');
+  const planVol = planVolNum==null ? '' : String(planVolNum);
+  const factBase = volFieldNum('cw-factbase') ?? 0;
   const cw = customWorkTypes[taskId];
   const changes = [];
   if((cw.unit||'')!==unit) changes.push(`ед. изм.: ${cw.unit||'—'} → ${unit}`);
@@ -10723,9 +10960,9 @@ function openManualWorkModal(){
       <div class="edit-field"><label>Единица измерения</label>
         <select id="mw-unit">${['м³','м²','п.м.','т','шт.','компл.','захв.','%'].map(u=>`<option value="${u}">${u}</option>`).join('')}</select></div>
       <div class="edit-field"><label>Объём по проекту</label>
-        <input type="number" id="mw-total" placeholder="напр. 1250"></div>
+        <input type="text" inputmode="decimal" id="mw-total" placeholder="напр. 1250,00" onblur="volFieldNormalize(this)"></div>
       <div class="edit-field"><label>Уже выполнено на сегодня</label>
-        <input type="number" id="mw-done" placeholder="0"></div>
+        <input type="text" inputmode="decimal" id="mw-done" placeholder="0,00" onblur="volFieldNormalize(this)"></div>
       <div class="edit-field"><label>Дата начала</label>
         <input type="date" onchange="this.blur()" id="mw-start" value="${today}"></div>
       <div class="edit-field"><label>Плановое окончание</label>
@@ -10757,8 +10994,8 @@ async function createManualWorkType(){
   const end = val('mw-end') || endFromDuration(start, 20);
   if(end < start){ if(msg){ msg.className='save-msg err'; msg.textContent='Плановое окончание раньше даты начала.'; } return; }
   const unit = val('mw-unit');
-  const total = Number(val('mw-total'))||0;
-  const done = Number(val('mw-done'))||0;
+  const total = parseVolNum(val('mw-total')) ?? 0;
+  const done = parseVolNum(val('mw-done')) ?? 0;
   const parent = val('mw-parent') || null;
   const contractor = val('mw-contractor').trim();
   const contract = val('mw-contract');
@@ -10859,7 +11096,7 @@ function openAddWorkTypeModal(){
       </div>
       <div class="edit-field" style="margin-bottom:14px;">
         <label>Объём работ по проекту (для «Остатка» в План/факте, можно оставить пустым)</label>
-        <input type="number" id="nwt-el-planvol" placeholder="напр. 131">
+        <input type="text" inputmode="decimal" id="nwt-el-planvol" placeholder="напр. 131,00" onblur="volFieldNormalize(this)">
       </div>
       <div style="font-size:11px;color:var(--text-muted);margin:-8px 0 14px;">Справочник конкретных элементов (участков/захваток) заполняется по одному — прямо в форме «Внести данные», при первом обращении к ним (кнопка «+ В справочник»), т.к. у этого вида работ ещё нет готового чертежа с разбивкой по элементам, как у СВГ/свай.</div>
     </div>
@@ -10876,7 +11113,7 @@ function openAddWorkTypeModal(){
       </div>
       <div class="edit-field" id="nwt-planvol-field" style="margin-bottom:14px;">
         <label>Объём работ по проекту (можно оставить пустым и заполнить позже)</label>
-        <input type="number" id="nwt-planvol" placeholder="напр. 120">
+        <input type="text" inputmode="decimal" id="nwt-planvol" placeholder="напр. 120,00" onblur="volFieldNormalize(this)">
       </div>
       <div style="font-size:11px;color:var(--text-muted);margin:-8px 0 14px;">После создания вид работ сразу появится отдельной строкой в «Внести данные», «План/факт» и «Динамике» — вносить факт можно будет прямо в ежедневном отчёте.</div>
     </div>
@@ -10953,13 +11190,13 @@ async function createCustomWorkType(){
     // выше), а не из текстового поля через запятую, как было раньше.
     const stageNames = nwtStages.slice();
     const stages = (stageNames.length?stageNames:['Выполнено']).map((name,i)=>({key:'s'+i, label:name}));
-    const planVol = document.getElementById('nwt-el-planvol').value.trim();
+    const planVol = (v=>v==null?'':String(v))(volFieldNum('nwt-el-planvol'));
     cw = { pattern:'elements', dwgFileName, unit, countOnly, stages, elements:[], planVol, factVolBase:0, zones:[], pct:0,
       history:[{ts:new Date().toISOString(), user:currentUser.name||ROLE_LABELS[currentUser.role], text:`Вид работ создан с поэлементным учётом (этапы: ${stages.map(s=>s.label).join(' → ')})${dwgFileName?`, приложен план-файл «${dwgFileName}»`:''}${planVol?`, плановый объём: ${planVol} ${unit}`:''}. Справочник элементов заполняется по мере работы, через форму «Внести данные».`}],
       comments:[] };
   } else {
     const unit = document.getElementById('nwt-unit').value;
-    const planVol = document.getElementById('nwt-planvol').value.trim();
+    const planVol = (v=>v==null?'':String(v))(volFieldNum('nwt-planvol'));
     cw = { pattern:'volume', dwgFileName, pct:0, zones:[], planVol, factVolBase:0, unit,
       history:[{ts:new Date().toISOString(), user:currentUser.name||ROLE_LABELS[currentUser.role], text:`Вид работ создан${dwgFileName?`, приложен план-файл «${dwgFileName}»`:' (без план-файла)'}${planVol?`, плановый объём: ${planVol} ${unit}`:''}.`}],
       comments:[] };
@@ -11247,7 +11484,7 @@ async function deAddNewCatalogElement(typeKey){
   const volInput = document.getElementById('de-stage-newel-vol-'+slug);
   const label = (idInput.value||'').trim();
   if(!label){ if(msgEl){ msgEl.className='save-msg err'; msgEl.textContent='Укажите обозначение элемента.'; } return; }
-  const vol = def.countOnly ? 1 : (Number(volInput.value)||0);
+  const vol = def.countOnly ? 1 : (parseVolNum(volInput.value) ?? 0);
   if(!def.countOnly && !vol){ if(msgEl){ msgEl.className='save-msg err'; msgEl.textContent='Укажите объём/длину нового элемента, '+(def.unit||'')+'.'; } return; }
   const cw = customWorkTypes[def.taskId]; if(!cw) return;
   const id = 'e'+Date.now()+Math.random().toString(36).slice(2,5);
@@ -11344,7 +11581,7 @@ function deStageSectionHTML(){
         <div style="margin-top:8px;">
           <div class="edit-grid" style="grid-template-columns:1.3fr 1fr auto;">
             <input type="text" id="de-stage-newel-id-${slug}" placeholder="Новый элемент, обозначение" style="${resRowFieldStyle()}">
-            <input type="number" id="de-stage-newel-vol-${slug}" placeholder="Объём/длина" style="${resRowFieldStyle()}${def.countOnly?'display:none;':''}">
+            <input type="text" inputmode="decimal" id="de-stage-newel-vol-${slug}" placeholder="Объём/длина" onblur="volFieldNormalize(this)" style="${resRowFieldStyle()}${def.countOnly?'display:none;':''}">
             <div class="btn ghost" onclick="deAddNewCatalogElement('${def.key}')">+ В справочник</div>
           </div>
           <div style="font-size:10.5px;color:var(--text-muted);margin-top:4px;">Если у вида работ ещё нет справочника элементов по чертежу — добавьте элемент один раз здесь, дальше он доступен для выбора как обычно.</div>
@@ -11411,13 +11648,13 @@ function renderDailyEntry(){
       <div style="font-size:11px;color:var(--text-muted);margin-top:5px;">По умолчанию — сегодня; можно указать более раннюю дату.</div>
     </div>
     <div class="edit-grid">
-      ${cardVisOverrides['soil']!=='hide' ? `<div class="edit-field"><label>${soilWorkName()}, м³ за день</label><input type="number" id="de-soil" placeholder="напр. 336">${progressState?`<div class="de-fact-caption">внесено с начала работ: ${fmtNum(progressState.soilVol,0)} / ${fmtNum(BASELINE.soilTotalVol,0)} м³</div>`:''}</div>` : ''}
+      ${cardVisOverrides['soil']!=='hide' ? `<div class="edit-field"><label>${soilWorkName()}, м³ за день</label><input type="text" inputmode="decimal" id="de-soil" placeholder="напр. 336,00" onblur="volFieldNormalize(this)">${progressState?`<div class="de-fact-caption">внесено с начала работ: ${fmtNum(progressState.soilVol,0)} / ${fmtNum(BASELINE.soilTotalVol,0)} м³</div>`:''}</div>` : ''}
       ${volumeCustomTasks().map(t=>{
         const cw = customWorkTypes[t.id];
         const unit = cw.unit||'м³';
         const plan = customEffectivePlan(cw, t.id);
         const fact = customFactVol(t.id);
-        return `<div class="edit-field"><label>${t.name}, ${unit}</label><input type="number" id="de-cw-${t.id}" placeholder="напр. 5">${plan>0?`<div class="de-fact-caption">внесено: ${fmtNum(fact,1)} / ${fmtNum(plan,1)} ${unit}</div>`:''}</div>`;
+        return `<div class="edit-field"><label>${t.name}, ${unit}</label><input type="text" inputmode="decimal" id="de-cw-${t.id}" placeholder="напр. 5,00" onblur="volFieldNormalize(this)">${plan>0?`<div class="de-fact-caption">внесено: ${fmtNum(fact,1)} / ${fmtNum(plan,1)} ${unit}</div>`:''}</div>`;
       }).join('')}
     </div>
     <div style="font-size:11px;color:var(--text-muted);margin:-6px 0 12px;">Форшахта, СВГ и сваи считаются автоматически по отметкам готовности ниже.</div>
@@ -11451,7 +11688,7 @@ function confirmSaveDailyEntry(){
   const dEl = document.getElementById('de-date');
   const date = (dEl && dEl.value) || drDate();
   const filled = ['de-soil'].concat(volumeCustomTasks().map(t=>'de-cw-'+t.id))
-    .some(id=>{ const el=document.getElementById(id); return el && el.value.trim()!=='' && Number(el.value)!==0; })
+    .some(id=>{ const el=document.getElementById(id); return el && el.value.trim()!=='' && (parseVolNum(el.value)||0)!==0; })
     || Object.keys(window.__deStageDraft||{}).length>0
     || (window.__dePhotos||[]).length>0
     || ((document.getElementById('de-comment')||{}).value||'').trim()!=='';
@@ -11478,7 +11715,7 @@ async function saveDailyEntry(){
   // Пустой отчёт (без единой заполненной позиции и без отмеченных этапов) разрешён —
   // по прямому указанию: отчёт можно отправить и без ввода данных (например, если по
   // объекту сегодня не было выполнено никаких работ, но отчёт всё равно нужно закрыть).
-  const get = id => raw(id)===''? 0 : Number(raw(id))||0;
+  const get = id => raw(id)===''? 0 : (parseVolNum(raw(id)) ?? 0);
   const date = document.getElementById('de-date').value || (typeof drDate==='function'?drDate():todayISO());
   const custom = {};
   customTasks.forEach(t=>{ if(raw('de-cw-'+t.id)!=='') custom[t.id] = get('de-cw-'+t.id); });
@@ -11853,14 +12090,14 @@ function renderSetupScreen(){
     const cw = customWorkTypes[t.id];
     const unit = cw.unit||'';
     const isPctUnit = unit==='%';
-    return `<div class="edit-field"><label>${t.name}, план. объём${unit?', '+unit:''}</label><input type="number" id="su-cw-planvol-${t.id}" value="${cw.planVol||''}" ${(editableVol&&!isPctUnit)?'':'disabled'}></div>`;
+    return `<div class="edit-field"><label>${t.name}, план. объём${unit?', '+unit:''}</label><input type="text" inputmode="decimal" id="su-cw-planvol-${t.id}" value="${volInputVal(cw.planVol)}" placeholder="0,00" onblur="volFieldNormalize(this)" ${(editableVol&&!isPctUnit)?'':'disabled'}></div>`;
   }).join('');
   const baselineCustomTasks = GANTT_TASKS.filter(t=>!t.linked && customWorkTypes[t.id] && taskVisibility(t).show
     && (customWorkTypes[t.id].pattern==='percent' || customWorkTypes[t.id].pattern==='volume'));
   const baselineCustomRows = baselineCustomTasks.map(t=>{
     const cw = customWorkTypes[t.id];
     const isPct = cw.pattern==='percent' || cw.unit==='%';
-    return `<div class="edit-field"><label>${t.name}, ${isPct?'готовность на дату, %':'выполнено на дату'+(cw.unit?', '+cw.unit:'')}</label><input type="number" ${isPct?'min="0" max="100"':''} id="su-base-cw-${t.id}" placeholder="напр. ${isPct?'40':'20'}"></div>`;
+    return `<div class="edit-field"><label>${t.name}, ${isPct?'готовность на дату, %':'выполнено на дату'+(cw.unit?', '+cw.unit:'')}</label><input type="text" inputmode="decimal" id="su-base-cw-${t.id}" placeholder="напр. ${isPct?'40':'20,00'}" onblur="${isPct?'':'volFieldNormalize(this)'}"></div>`;
   }).join('');
 
   /* Сроки — по ВСЕМ видам работ ГПР (раньше был жёстко зашитый список из 9 задач).
@@ -12550,14 +12787,44 @@ function parseVolNum(v){
   const n = Number(t);
   return isFinite(n) ? n : null;
 }
-/* Показ числа в поле ввода: как в таблице — с запятой, без «хвоста» нулей. */
+/* ================= ЕДИНЫЙ ФОРМАТ ОБЪЁМОВ 0,00 =================
+   Один стандарт на всё приложение: десятичный разделитель — ЗАПЯТАЯ, два знака после
+   неё. Раньше формат зависел от места: в таблице объёмов было «0,000», а в ячейке
+   ежедневного отчёта поле <input type="number"> показывало и требовало «0.000» —
+   браузер в числовом поле не принимает запятую и на «12,5» отдаёт пустую строку.
+   Отсюда единственная точка форматирования (volInputVal) и единственная точка разбора
+   (parseVolNum): числовое значение при преобразовании не меняется, меняется только его
+   запись. Все поля ввода объёмов в системе — текстовые с inputmode="decimal", поэтому
+   принимают и запятую, и точку, а показывают всегда запятую. */
+const VOL_DEC = 2;
 function volInputVal(v){
   if(v==null || v==='' || !isFinite(Number(v))) return '';
-  const n = Number(v);
-  return (Math.round(n*100)/100).toString().replace('.', ',');
+  return Number(v).toFixed(VOL_DEC).replace('.', ',');
+}
+/* Показ объёма в тексте/ячейке: тот же стандарт 0,00, но с разделением разрядов. */
+function volFmt(v, unit){
+  if(v==null || v==='' || !isFinite(Number(v))) return '—';
+  return fmtNum(Number(v), VOL_DEC).replace('.', ',') + (unit?' '+unit:'');
+}
+/* Чтение объёма из поля по id: '' → null, «12,50» и «12.50» → 12.5. */
+function volFieldNum(id){
+  const el = document.getElementById(id);
+  return el ? parseVolNum(el.value) : null;
+}
+/* Приведение поля к формату 0,00 после ввода (onblur) — значение не меняется. */
+function volFieldNormalize(el){
+  if(!el) return;
+  const n = parseVolNum(el.value);
+  el.value = (n==null) ? '' : volInputVal(n);
+}
+/* Разметка поля ввода объёма для всех разделов, кроме таблицы объёмов (у неё свой
+   обработчик пересчёта, см. volNumInput ниже). */
+function volField(id, value, ph, attrs){
+  return `<input type="text" inputmode="decimal" id="${id}" value="${volInputVal(value)}"
+    placeholder="${ph==null?'0,00':ph}" onblur="volFieldNormalize(this)" ${attrs||''}>`;
 }
 function volNumInput(id, value, ph, taskId, width){
-  return `<input type="text" inputmode="decimal" class="qe-input" style="width:${width||110}px;" id="${id}" value="${volInputVal(value)}" placeholder="${ph||''}" oninput="volRecalc('${taskId}')">`;
+  return `<input type="text" inputmode="decimal" class="qe-input" style="width:${width||110}px;" id="${id}" value="${volInputVal(value)}" placeholder="${ph||'0,00'}" oninput="volRecalc('${taskId}')" onblur="volFieldNormalize(this)">`;
 }
 
 /* =====================================================================================
@@ -13936,7 +14203,8 @@ async function saveSetupVolumes(){
     const inp = document.getElementById('su-cw-planvol-'+t.id);
     if(!inp || inp.disabled) continue;
     const cw = customWorkTypes[t.id];
-    const val = inp.value.trim();
+    const valNum = parseVolNum(inp.value);
+    const val = valNum==null ? '' : String(valNum);
     if(String(cw.planVol||'')!==val){
       await saveCustomWorkType(t.id, c=>{ c.planVol = val; }, `План. объём скорректирован при настройке проекта: ${cw.planVol||'—'} → ${val||'—'}${cw.unit?' '+cw.unit:''}`);
     }
@@ -13962,7 +14230,7 @@ async function saveSetupBaseline(){
     msgEl.textContent='Укажите хотя бы один объём (можно указать 0).';
     return;
   }
-  const get = id => raw(id)===''? 0 : Number(raw(id))||0;
+  const get = id => raw(id)===''? 0 : (parseVolNum(raw(id)) ?? 0);
   const date = document.getElementById('su-base-date').value || todayISO();
   const comment = document.getElementById('su-base-comment').value.trim();
   /* status:'approved' сразу — это исходные данные, которые директор вносит от своего
@@ -13993,10 +14261,10 @@ async function saveSetupBaseline(){
     if(val==='') continue;
     const cw = customWorkTypes[t.id];
     if(cw.pattern==='percent'){
-      const num = Math.max(0, Math.min(100, Number(val)||0));
+      const num = Math.max(0, Math.min(100, parseVolNum(val) ?? 0));
       await saveCustomWorkType(t.id, c=>{ c.pct = num; }, `Исходные данные при настройке проекта: готовность ${num}% на ${fmtDate(date)}`);
     } else {
-      const num = Number(val)||0;
+      const num = parseVolNum(val) ?? 0;
       await saveCustomWorkType(t.id, c=>{ c.factVolBase = (Number(c.factVolBase)||0) + num; }, `Исходные данные при настройке проекта: +${num}${cw.unit?' '+cw.unit:''} на ${fmtDate(date)}`);
     }
   }
@@ -14066,13 +14334,26 @@ function popScrollRestore(){
    функция идемпотентна, её можно звать после любого открытия/закрытия. Саму позицию
    страница не теряет: overflow:hidden не сбрасывает scrollTop, а существующие
    pushScrollSave/popScrollRestore дополнительно возвращают её точно. */
-function anyModalOpen(){
-  if(sheet && sheet.classList.contains('show')) return true;
-  if(document.querySelector('.screen.screen-popup')) return true;
-  const ov = document.getElementById('ovPanel'); if(ov && ov.classList.contains('show')) return true;
-  const fm = document.getElementById('schemeFullModal'); if(fm && fm.classList.contains('show')) return true;
-  return false;
+/* Перечень ВСЕХ всплывающих окон приложения в одном месте. Раньше окно просмотра
+   графика в него не входило и само ставило класс .modal-open — из-за этого закрытие
+   любой шторки поверх него снимало признак «окно открыто», хотя окно оставалось на
+   экране, а состояние накапливало рассинхронизацию. Теперь признак выводится из DOM,
+   поэтому syncPageScrollLock() идемпотентна: её можно звать после любого открытия и
+   закрытия, в любом порядке, сколько угодно раз. */
+function openModalNodes(){
+  const out = [];
+  if(sheet && sheet.classList.contains('show')) out.push(sheet);
+  document.querySelectorAll('.screen.screen-popup').forEach(el=>out.push(el));
+  const ov = document.getElementById('ovPanel'); if(ov && ov.classList.contains('show')) out.push(ov);
+  const fm = document.getElementById('schemeFullModal'); if(fm && fm.classList.contains('show')) out.push(fm);
+  const gv = document.getElementById('ganttViewer');
+  if(gv && gv.style.display && gv.style.display!=='none') out.push(gv);
+  const np = document.getElementById('notifPanel'); if(np && np.classList.contains('show')) out.push(np);
+  return out;
 }
+function anyModalOpen(){ return openModalNodes().length > 0; }
+/* Признак «открыто окно» для скриптов и оформления. Прокрутку страницы НЕ отключает:
+   за разделение прокрутки окна и страницы отвечает overscroll-behavior:contain в CSS. */
 function syncPageScrollLock(){
   document.body.classList.toggle('modal-open', anyModalOpen());
 }
@@ -14111,7 +14392,12 @@ async function confirmActionRun(){
   if(typeof cb === 'function') await cb();
 }
 function openSheetOverlay(){
-  pushScrollSave();
+  /* Позицию прокрутки шторка больше не запоминает и не восстанавливает: страница под
+     ней остаётся на месте и прокручивается как обычно, поэтому возвращать её некуда, а
+     принудительный возврат теперь отменял бы прокрутку, которую пользователь сделал
+     сам, пока окно было открыто. Запоминание осталось там, где оно и нужно, — у
+     всплывающих карточек «Ход работ» (openWorkScreenPopup): они убирают класс .active у
+     всех экранов, страница схлопывается, и позиция теряется по-настоящему. */
   overlay.classList.add('show'); sheet.classList.add('show');
   sheet.scrollTop = 0;              // новое окно всегда открывается с начала содержимого
   syncPageScrollLock();
@@ -14255,6 +14541,10 @@ async function initApp(){
      заполняются вручную. Стоит здесь: extraTasks/workTypeMeta/volumePlans и журнал уже
      загружены, а ganttOverrides/customWorkTypes загружаются ниже — то есть подхватят
      перенесённые значения без второго прохода. */
+  /* Откат расширенного переноса ГПР выполняется ДО базового переноса: он сбрасывает
+     отметку версии applyProjectImport, и тот сразу же восстанавливает прежние
+     наименования, иерархию, порядок и сроки работ. */
+  await undoGprImport();
   await applyProjectImport();
   await recomputeConfirmedForshahtaZah();
   await recomputeConfirmedWallZah();
