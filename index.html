@@ -329,6 +329,11 @@
   .gpr-tl-bar{ position:absolute; top:0; height:14px; border-radius:7px; overflow:hidden; }
   .gpr-tl-fill{ height:100%; background:rgba(255,255,255,0.35); }
   .gpr-tl-pct{ font-family:'IBM Plex Mono'; font-size:10.5px; text-align:right; }
+  /* Строка контрольных точек в карточке ГПР: та же дорожка, что у работ, но без
+     подложки — на ней стоят только ромбы, полосы у вехи нет. */
+  .gpr-tl-mstrack{ background:transparent; }
+  .gpr-tl-msrow{ padding-bottom:1px; }
+  .gpr-tl-msrow .gantt-ms{ top:-2px; }
   .gpr-tl-today{ position:absolute; top:-2px; bottom:-2px; width:2px; background:var(--amber); z-index:2; margin-left:190px; }
   .gpr-tl-today span{ position:absolute; top:-16px; left:50%; transform:translateX(-50%); font-size:9.5px; color:var(--amber); white-space:nowrap; font-weight:600; background:var(--surface); padding:0 4px; border-radius:3px; }
   @media (max-width:760px){ .gpr-tl-row{ grid-template-columns:110px 1fr 40px; } .gpr-tl-axis, .gpr-tl-today{ margin-left:110px; } }
@@ -981,7 +986,10 @@
   .gantt-el-mark{ color:var(--text-muted); }
   .gantt-row-head.gantt-el{ background:var(--surface); }
   .gantt-label{ font-size:12.5px; font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .gantt-dates{ font-size:10.5px; color:var(--text-muted); font-family:'IBM Plex Mono'; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  /* Строка сроков не обрезается: ни overflow:hidden с многоточием, ни переноса — текст
+     подобран так, чтобы помещаться в зону наименований целиком на всех уровнях вложенности. */
+  .gantt-dates{ font-size:10px; color:var(--text-muted); font-family:'IBM Plex Mono'; white-space:nowrap;
+    letter-spacing:-0.1px; overflow:visible; text-overflow:clip; }
   .gantt-dates b{ color:var(--text); font-weight:500; }
   .gantt-track{ position:relative; height:20px; width:100%; background:var(--surface-2); border-radius:4px; }
   .gantt-bar{ position:absolute; top:0; height:20px; border-radius:4px; cursor:pointer; overflow:hidden; min-width:10px; }
@@ -997,7 +1005,13 @@
   .gantt-toolbar-lbl{ font-size:11.5px; color:var(--text-muted); margin-right:2px; }
   .gantt-grid-line{ position:absolute; top:0; bottom:0; width:1px; background:var(--line); opacity:.5; }
   .gantt-ms-hint{ font-size:11px; color:var(--text-muted); line-height:18px; }
-  .gantt-ms-track{ position:relative; height:18px; }
+  /* Дорожка контрольных точек — такой же прямоугольник во всю ширину шкалы, как дорожка
+     полос работ (.gantt-track). БЕЗ width:100% она была флекс-элементом БЕЗ ширины: её
+     единственное содержимое — ромб с position:absolute — в раскладке места не занимает,
+     поэтому ширина дорожки получалась 0 px, и left:38,97 % от нуля ставил ВСЕ ромбы в
+     одну точку у левого края шкалы. Проценты (ganttPct) при этом считались верно —
+     не хватало только ширины контейнера, от которой они отсчитываются. */
+  .gantt-ms-track{ position:relative; height:18px; width:100%; }
   .gantt-ms{ position:absolute; top:0; transform:translateX(-50%); font-size:13px; line-height:18px; cursor:help; z-index:2; }
   .main-view-switch{ margin-bottom:16px; }
   .gv-overlay{ position:fixed; inset:0; z-index:300; background:rgba(0,0,0,.55); display:none; align-items:center; justify-content:center; padding:24px; }
@@ -2541,7 +2555,7 @@ function gprCardHTML(opts){
          <div class="sch-btn" onclick="${act}">Полный график</div>
        </div>`;
   const body = `${up?`<div class="dcard-sub" style="margin:${opts.heading==='section'?'0 0 4px':'6px 0 2px'};">${up}</div>`:''}
-    ${gprTimelineHTML()}`;
+    ${gprTimelineHTML({milestones: opts.milestones})}`;
   return opts.heading==='section'
     ? head + `<div class="plan-card">${body}</div>`
     : head + body;
@@ -2556,7 +2570,8 @@ function upcomingWorksLine(){
 /* Линейный график производства работ с вертикальной линией «Сегодня». Компактный: только
    активные и ближайшие работы, чтобы не превращать рабочий стол во второй экран графика.
    Позиция линии считается от текущей даты, поэтому график обновляется сам со временем. */
-function gprTimelineHTML(){
+function gprTimelineHTML(opts){
+  opts = opts || {};
   const tasks = wtFilter(schedOrderedTasks(), 'gpr').filter(t=>!archivedWorkTypes[t.id] && !hasChildren(t.id))
     .filter(t=>{ const d=taskDates(t); return d.start && d.end; });
   if(!tasks.length) return '<div class="history-empty">График производства работ не задан.</div>';
@@ -2593,6 +2608,32 @@ function gprTimelineHTML(){
     if(inRange && Math.abs(m.pct - todayPct) < 7) return;
     months.push(m);
   });
+  /* Контрольные точки. БЫЛО: в этом блоке их не было вовсе — экран графика показывал
+     ромбы контрольных точек, а карточка «График производства работ» на рабочем столе и
+     в «Общей информации» рисовала только полосы работ и линию «Сегодня», из-за чего
+     контрольные точки в ГПР не отображались.
+     СТАЛО: тот же единственный источник msList(), тот же ромб ◆, тот же цвет по
+     msStatus() и та же подсказка при наведении (класс .gantt-ms, общий обработчик
+     ganttBindMsTooltip). Второго перечня точек не заводится.
+     Показываются точки, попадающие в период карточки: карточка — окно на ближайшие
+     работы, и точка вне её периода встала бы на край и врала бы по дате. Когда таких
+     точек меньше, чем всего, это прямо сказано в подписи. */
+  const msAll = (opts.milestones===false) ? []
+    : (typeof msList==='function' ? msList() : []).filter(m=>m.end && !m.hidden);
+  const msIn = msAll.filter(m=>{ const v = new Date(m.end).getTime(); return v>=t0 && v<=t1; })
+                    .sort((a,b)=> String(a.end).localeCompare(String(b.end)));
+  const msLabel = msIn.length===msAll.length ? `(${msIn.length})` : `(${msIn.length} из ${msAll.length})`;
+  const msLine = msIn.length ? `
+        <div class="gpr-tl-row gpr-tl-msrow">
+          <div class="gpr-tl-name">Контрольные точки <span class="qe-sub">${msLabel}</span></div>
+          <div class="gpr-tl-track gpr-tl-mstrack">
+            ${msIn.map(m=>{ const st = msStatus(m);
+              return `<div class="gantt-ms" style="left:${pos(new Date(m.end).getTime())}%; color:${st.color};"
+                data-ms="${String(m.name).replace(/"/g,'&quot;')} · ${fmtDate(m.end)} · ${st.label}">◆</div>`;
+            }).join('')}
+          </div>
+          <div class="gpr-tl-pct"></div>
+        </div>` : '';
   return `
     <div class="gpr-tl">
       <div class="gpr-tl-axis">
@@ -2600,6 +2641,7 @@ function gprTimelineHTML(){
       </div>
       <div class="gpr-tl-body">
         ${inRange?`<div class="gpr-tl-today" style="left:${todayPct}%;"><span>Сегодня ${fmtDate(todayISO()).slice(0,5)}</span></div>`:''}
+        ${msLine}
         ${show.map(x=>{
           const l = pos(new Date(x.d.start).getTime()), r = pos(new Date(x.d.end).getTime());
           const overdue = new Date(x.d.end) < TODAY && x.prog < 100;
@@ -2647,7 +2689,12 @@ function renderDashboardScreen(){
   const dwEl = document.getElementById('dwSummary');
   if(dwEl) dwEl.innerHTML = (typeof dwSummaryHTML==='function') ? dwSummaryHTML() : '';
   const gpr = document.getElementById('dashGprCard');
-  if(gpr) gpr.innerHTML = gprCardHTML();
+  if(gpr){
+    gpr.innerHTML = gprCardHTML();
+    /* Подсказки к контрольным точкам — тот же обработчик, что и у графика; он привязывает
+       ромбы по классу .gantt-ms и не привязывает один и тот же дважды. */
+    if(typeof ganttBindMsTooltip==='function') ganttBindMsTooltip();
+  }
   renderDashTopRow();
   renderDashMidRow();
   renderDashBotRow();
@@ -8739,7 +8786,13 @@ function ovScheduleHTML(sec){
   /* Тот же блок, что и на рабочем столе (gprCardHTML) — второй версии ГПР здесь нет.
      Заголовок раздела директор может переименовать в настройке «Общей информации»;
      если он этого не делал, используется общее название графика. */
-  return gprCardHTML({heading:'section', full:'viewer', title:(sec && sec.title) || GPR_TITLE});
+  /* Если директор скрыл в «Общей информации» раздел «Контрольные точки», то на ЭТОМ
+     экране их нет и в графике — иначе скрытый раздел возвращался бы строкой внутри
+     соседнего блока. На рабочем столе и на экране графика эта настройка не действует:
+     она про состав «Общей информации», а не про сам график. */
+  const msSec = (typeof ovSection==='function') ? ovSection('ov_ms') : null;
+  return gprCardHTML({heading:'section', full:'viewer', title:(sec && sec.title) || GPR_TITLE,
+    milestones: msSec ? !msSec.hidden : true});
 }
 function renderOverviewScreen(){
   const el = document.getElementById('ovBody'); if(!el) return;
@@ -8792,6 +8845,8 @@ function renderOverviewScreen(){
       </div>` : ''}
     <div class="section-label" style="margin-top:0;"><h2>Общая информация по объекту</h2></div>
     ${sections.length ? sections.map(secHTML).join('') : '<div class="plan-card"><div class="history-empty">Все разделы скрыты или удалены. Состав раздела настраивается в «Настройки проекта → Общая информация».</div></div>'}`;
+  /* Подсказки к контрольным точкам блока ГПР — тот же обработчик, что и у графика. */
+  if(typeof ganttBindMsTooltip==='function') ganttBindMsTooltip();
 }
 /* Предварительный просмотр — тот же экран, а не его копия: поднимается флаг, из-за
    которого сверху появляется полоса возврата, всё остальное рисуется как у пользователя. */
@@ -10206,17 +10261,37 @@ function ganttChartHTML(opts){
     const isSummary = hasChildren(t.id);
     const isCrit = cpG.critical.has(t.id);
     const color = FORCE_YELLOW_DONE.has(t.id) ? COLORS.yellow : (progress>=100?COLORS.green: overdue?COLORS.red: progress>0?COLORS.blue:COLORS.grey);
-    const rowIcon = FORCE_YELLOW_DONE.has(t.id) ? `<span style="color:var(--yellow);">✓</span>` : statusIconHTML(progress, overdue);
-    const fShort = d => d ? fmtDate(d).slice(0,5) : '—';
+    /* Значков состояния и метки «крит.» в строке больше нет: строка — это наименование,
+       сроки и продолжительность. Состояние работы и критический путь показывает сама
+       полоса на шкале (её цвет считается тут же, в color, и не менялся), а расчёт
+       критического пути (computeCriticalPath) и статусы остались нетронутыми — убрано
+       только их дублирование в зоне наименований, где оно съедало место у дат. */
+    const fShort = d => d ? fmtDate(d).slice(0,5) : '';
     /* У работы с элементами — «твистер» раскрытия прямо в зоне наименований. */
     const elN = wkElements(t.id).length;
     const opened = !!window.__wkOpen[t.id];
     const twist = elN ? `<span class="gantt-twist" onclick="event.stopPropagation(); ganttToggleWork('${t.id}')" title="${opened?'Свернуть элементы':'Показать элементы работы'}">${opened?'▼':'▶'}</span>` : '';
     const elMark = wkIsElement(t.id) ? '<span class="gantt-el-mark">↳</span> ' : '';
+    /* Сроки и продолжительность: те же taskDates() и workingDaysBetween(), что и раньше —
+       отдельного расчёта не заводится. Из строки убрана приписка «/факт», из-за которой
+       текст не помещался в зону наименований и обрезался многоточием; фактические даты не
+       потеряны — они в подсказке этой же строки. На узком экране зона наименований вдвое
+       уже (ganttNameColW), поэтому там та же информация даётся короткой записью — без
+       обрезки и без многоточия. */
+    const dur = workingDaysBetween(start, end);
+    const narrow = (typeof window!=='undefined' && window.innerWidth<=620);
+    const datesLine = narrow
+      ? `${fShort(start)||'—'} → ${fShort(end)||'—'} · ${dur} дн.`
+      : `Начало: <b>${fShort(start)||'—'}</b> · Окончание: <b>${fShort(end)||'—'}</b> · ${dur} дн.`;
+    const datesTip = [
+      `План: ${start?fmtDate(start):'—'} — ${end?fmtDate(end):'—'} · ${dur} раб. дн.`,
+      (factStart||factEnd) ? `Факт: ${factStart?fmtDate(factStart):'—'} — ${factEnd?fmtDate(factEnd):'—'}` : '',
+      isCrit ? 'Критический путь' : ''
+    ].filter(Boolean).join(' · ').replace(/"/g,'&quot;');
     heads += `
       <div class="gantt-row-head${wkIsElement(t.id)?' gantt-el':''}" data-gid="${t.id}" style="padding-left:${depth*14}px;">
-        <div class="gantt-label" style="${isSummary&&!elN?'font-weight:700;':''}">${twist}${elMark}${rowIcon} ${t.name}${elN?` <span class="wk-elcnt">${elN} эл.</span>`:''}${isCrit?' <span class="sch-crit-badge">крит.</span>':''}</div>
-        <div class="gantt-dates">Начало: <b>${fShort(start)}</b>/${fShort(factStart)} · Окончание: <b>${fShort(end)}</b>/${fShort(factEnd)} · ${workingDaysBetween(start,end)} дн.</div>
+        <div class="gantt-label" style="${isSummary&&!elN?'font-weight:700;':''}">${twist}${elMark}${t.name}${elN?` <span class="wk-elcnt">${elN} эл.</span>`:''}</div>
+        <div class="gantt-dates" title="${datesTip}">${datesLine}</div>
       </div>`;
     bars += `
       <div class="gantt-timeline-col" data-gid="${t.id}">
@@ -10246,7 +10321,8 @@ function ganttChartHTML(opts){
     msBars += `<div class="gantt-timeline-col gantt-ms-head"><div class="gantt-ms-track">${msExpanded?'':msMarks}</div></div>`;
     if(msExpanded) msRow.forEach(m=>{
       const st = msStatus(m);
-      msHeads += `<div class="gantt-row-head gantt-ms-row" style="padding-left:14px;">
+      const msTip = `${String(m.name).replace(/"/g,'&quot;')} · ${m.end?fmtDate(m.end):'—'} · ${st.label}`;
+      msHeads += `<div class="gantt-row-head gantt-ms-row" style="padding-left:14px;" title="${msTip}">
           <div class="gantt-label"><span style="color:${st.color};">◆</span> ${m.name}</div>
           <div class="gantt-dates">${m.end?fmtDate(m.end):'—'} · ${st.label}</div>
         </div>`;
