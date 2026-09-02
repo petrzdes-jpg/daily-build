@@ -13,12 +13,104 @@
   const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_ocMLfk3myWHftmjToepVrQ_XWG4E-T5';
   const DB_PROJECT_ID = 1;
 
-  const db = window.supabase.createClient(
-    SUPABASE_URL,
-    SUPABASE_PUBLISHABLE_KEY
-  );
+  /* ============================================================================
+     ШАГ 1. СНИМОК АДРЕСНОЙ СТРОКИ — СТРОГО ДО createClient().
+     ----------------------------------------------------------------------------
+     Клиент Supabase создаётся с detectSessionInUrl:true и СРАЗУ (асинхронно, но ещё
+     во время разбора остальной части этого большого файла) разбирает hash/query,
+     создаёт сессию и ВЫЧИЩАЕТ параметры из адресной строки через history.replaceState.
+     Именно поэтому прежняя проверка «похоже ли на recovery», выполнявшаяся в самом
+     низу файла, всегда видела уже очищенный URL и recovery-режим не включался.
+     Здесь мы снимаем URL синхронно, до создания клиента, и запоминаем факт recovery
+     в sessionStorage — этот признак переживает и redirect, и перезагрузку страницы,
+     и работает одинаково в Safari/Chrome.
+     ============================================================================ */
+  window.__DB_RECOVERY_FLAG = 'dailybuild:pending-password-recovery';
+  (function captureAuthUrl(){
+    var href = location.href, hash = location.hash || '', search = location.search || '';
+    console.log('[AUTH] initial URL', href.replace(/(access_token|refresh_token|code)=[^&]*/g, '$1=***'));
+    console.log('[AUTH] hash', hash ? hash.replace(/(access_token|refresh_token)=[^&]*/g, '$1=***') : '(пусто)');
+    console.log('[AUTH] search', search ? search.replace(/code=[^&]*/g, 'code=***') : '(пусто)');
 
+    var hp, qp;
+    try{ hp = new URLSearchParams(hash.replace(/^#/, '')); }catch(e){ hp = new URLSearchParams(''); }
+    try{ qp = new URLSearchParams(search); }catch(e){ qp = new URLSearchParams(''); }
+
+    var type      = hp.get('type')       || qp.get('type')       || '';
+    var errCode   = hp.get('error_code') || qp.get('error_code') || '';
+    var errDesc   = hp.get('error_description') || qp.get('error_description') || '';
+    var hasTokens = !!hp.get('access_token');
+    var hasCode   = !!qp.get('code');
+
+    var isRecoveryLink = (type === 'recovery');
+    // Ссылка протухла/уже использована — Supabase возвращает ошибку в hash.
+    var isRecoveryError = /otp_expired|access_denied/i.test(errCode + ' ' + errDesc) && (isRecoveryLink || !!errCode);
+
+    window.__DB_URL_SNAPSHOT = {
+      href: href, hash: hash, search: search,
+      type: type, hasTokens: hasTokens, hasCode: hasCode,
+      errCode: errCode, errDesc: errDesc
+    };
+    window.__DB_RECOVERY_FROM_URL = isRecoveryLink;
+    window.__DB_RECOVERY_LINK_ERROR = isRecoveryError ? (errDesc || errCode) : '';
+
+    if(isRecoveryLink){
+      // Ставим отметку СРАЗУ, до того как Supabase почистит адресную строку.
+      try{ sessionStorage.setItem(window.__DB_RECOVERY_FLAG, String(Date.now())); }catch(e){}
+    }
+    console.log('[AUTH] recovery in URL:', isRecoveryLink, '| tokens:', hasTokens, '| code:', hasCode, '| link error:', window.__DB_RECOVERY_LINK_ERROR || 'нет');
+  })();
+
+  /* ШАГ 2. Клиент Supabase. Единственный на всё приложение.
+     flowType задан явно как 'implicit': письма восстановления, выпущенные и из
+     Supabase Dashboard, и через resetPasswordForEmail(), возвращают токены в hash —
+     PKCE (?code=) в этом сценарии не имеет сохранённого code_verifier и обмен кода
+     завершился бы ошибкой. detectSessionInUrl оставлен включённым явно, чтобы
+     поведение не зависело от версии SDK. Ключ — publishable (anon), RLS не трогаем. */
+  let db = null;
+  try{
+    if(window.supabase && window.supabase.createClient){
+      db = window.supabase.createClient(
+        SUPABASE_URL,
+        SUPABASE_PUBLISHABLE_KEY,
+        {
+          auth: {
+            persistSession: true,
+            autoRefreshToken: true,
+            detectSessionInUrl: true,
+            flowType: 'implicit'
+          }
+        }
+      );
+    } else {
+      console.error('[AUTH] Supabase SDK не загрузился — вход по паролю и восстановление недоступны');
+    }
+  }catch(e){
+    console.error('[AUTH] createClient failed', e);
+  }
   window.dailyBuildSupabase = db;
+
+  /* ШАГ 3. Слушатель onAuthStateChange регистрируется ЗДЕСЬ, сразу после создания
+     клиента, а не в конце файла: событие PASSWORD_RECOVERY возникает при разборе URL
+     и раньше терялось, потому что подписка появлялась на 15 тысяч строк позже.
+     Обработчик интерфейса (__dbOnAuthEvent) к этому моменту ещё не определён, поэтому
+     события копятся в очереди и разбираются, когда приложение будет готово. */
+  window.__DB_AUTH_QUEUE = [];
+  window.__DB_RECOVERY_EVENT_SEEN = false;
+  if(db){
+    db.auth.onAuthStateChange(function(event, session){
+      console.log('[AUTH] event', event, '| session:', session ? ('есть, user ' + (session.user && session.user.id)) : 'нет');
+      if(event === 'PASSWORD_RECOVERY'){
+        window.__DB_RECOVERY_EVENT_SEEN = true;
+        try{ sessionStorage.setItem(window.__DB_RECOVERY_FLAG, String(Date.now())); }catch(e){}
+      }
+      if(typeof window.__dbOnAuthEvent === 'function'){
+        try{ window.__dbOnAuthEvent(event, session); }catch(e){ console.error('[AUTH] handler error', e); }
+      } else {
+        window.__DB_AUTH_QUEUE.push({event: event, session: session});
+      }
+    });
+  }
 </script>
 
 <script>
@@ -1249,12 +1341,13 @@
       <div class="login-title">DAILY BUILD</div>
       <div class="login-sub">журнал строительства · выберите роль</div>
       <div id="passwordRecoveryBox" style="display:none; margin:18px 0 14px; padding:16px; border:1px solid var(--amber); border-radius:10px; background:var(--amber-dim); text-align:left;">
-        <div style="font-family:'Barlow Condensed'; font-size:18px; font-weight:700; margin-bottom:6px;">Задать новый пароль</div>
-        <div style="font-size:12px; color:var(--text-muted); line-height:1.45; margin-bottom:12px;">Ссылка восстановления подтверждена. Придумайте новый пароль для входа директора по строительству.</div>
+        <div id="recoveryTitle" style="font-family:'Barlow Condensed'; font-size:18px; font-weight:700; margin-bottom:6px;">Восстановление доступа</div>
+        <div id="recoveryHint" style="font-size:12px; color:var(--text-muted); line-height:1.45; margin-bottom:12px;">Ссылка восстановления подтверждена. Придумайте новый пароль для входа директора по строительству.</div>
         <input type="password" id="recoveryPassword1" autocomplete="new-password" placeholder="Новый пароль" style="width:100%; margin-bottom:8px; background:var(--surface-2); border:1px solid var(--line); border-radius:6px; color:var(--text); padding:10px 11px; font-size:14px;">
         <input type="password" id="recoveryPassword2" autocomplete="new-password" placeholder="Повторите новый пароль" style="width:100%; margin-bottom:10px; background:var(--surface-2); border:1px solid var(--line); border-radius:6px; color:var(--text); padding:10px 11px; font-size:14px;">
-        <div class="btn primary" style="width:100%; justify-content:center;" onclick="saveRecoveredPassword()">Сохранить новый пароль</div>
+        <div class="btn primary" id="recoveryPasswordBtn" style="width:100%; justify-content:center;" onclick="saveRecoveredPassword()">Сохранить новый пароль</div>
         <div class="save-msg" id="recoveryPasswordMsg" style="margin-top:8px;"></div>
+        <div id="recoveryBackRow" style="display:none; margin-top:10px;"><span style="cursor:pointer; color:var(--amber); font-size:12px;" onclick="hidePasswordRecovery()">← Вернуться к выбору роли</span></div>
       </div>
       <!-- Пароль вводится ПРЯМО В КНОПКЕ роли: кнопка раскрывается, поле появляется внутри
            неё. Никаких prompt/alert и отдельных модальных окон. -->
@@ -1722,27 +1815,99 @@ function renderThemeToggle(){
   el.title = 'Переключить тему оформления';
 }
 
-/* ================= SUPABASE PASSWORD RECOVERY ================= */
+/* ================= SUPABASE PASSWORD RECOVERY =================
+   ПРИЧИНА ПРЕЖНЕЙ ПОЛОМКИ (кратко): признак recovery вычислялся по location.href уже
+   в самом низу файла, а к тому моменту Supabase (detectSessionInUrl) успевал разобрать
+   hash и вычистить адресную строку; событие PASSWORD_RECOVERY тоже успевало пройти до
+   регистрации подписки. Поэтому оба сигнала терялись и показывался обычный выбор ролей.
+   Теперь снимок URL и подписка на события живут в <head> (см. первый script файла), а
+   здесь — только интерфейс и решение «показывать ли форму». */
 let __passwordRecoveryMode = false;
+const RECOVERY_FLAG = (window.__DB_RECOVERY_FLAG || 'dailybuild:pending-password-recovery');
+/* Отметка recovery живёт ограниченное время: восстановительная ссылка одноразовая и
+   короткоживущая, а «зависший» флаг не должен навсегда подменять экран выбора ролей. */
+const RECOVERY_FLAG_TTL_MS = 30 * 60 * 1000;
 
-function showPasswordRecovery(){
-  __passwordRecoveryMode = true;
+function recoveryFlagActive(){
+  try{
+    const raw = sessionStorage.getItem(RECOVERY_FLAG);
+    if(!raw) return false;
+    const ts = Number(raw);
+    if(!ts || isNaN(ts)) return true;           // старый формат '1' — считаем активным
+    if(Date.now() - ts > RECOVERY_FLAG_TTL_MS){ // протух — убираем
+      try{ sessionStorage.removeItem(RECOVERY_FLAG); }catch(e){}
+      return false;
+    }
+    return true;
+  }catch(e){ return false; }
+}
+function setRecoveryFlag(){ try{ sessionStorage.setItem(RECOVERY_FLAG, String(Date.now())); }catch(e){} }
+function clearRecoveryFlag(){ try{ sessionStorage.removeItem(RECOVERY_FLAG); }catch(e){} }
+
+/* Только внешний вид. Вынесено отдельной функцией, чтобы showScreen('login') мог
+   восстановить состояние экрана, если что-то попытается вернуть пользователя к выбору
+   ролей во время восстановления пароля. */
+function applyPasswordRecoveryUi(){
   const box = document.getElementById('passwordRecoveryBox');
   if(box) box.style.display = 'block';
   document.querySelectorAll('#screen-login .role-btn').forEach(el=>{ el.style.display='none'; });
   const sub = document.querySelector('#screen-login .login-sub');
-  if(sub) sub.textContent = 'Восстановление доступа директора';
+  if(sub) sub.textContent = 'Восстановление доступа';
+}
+
+function showPasswordRecovery(){
+  if(__passwordRecoveryMode){ applyPasswordRecoveryUi(); return; }
+  __passwordRecoveryMode = true;
+  console.log('[AUTH] recovery mode', true, '— показываем форму смены пароля');
+  closeRoleLogin && closeRoleLogin();
+  applyPasswordRecoveryUi();
   if(typeof showScreen === 'function') showScreen('login');
   setTimeout(()=>{ const el=document.getElementById('recoveryPassword1'); if(el) el.focus(); }, 50);
 }
 
+/* Ссылка недействительна/просрочена: форму ввода не показываем — только объяснение,
+   иначе пользователь введёт пароль и получит невнятную ошибку сохранения. */
+function showRecoveryLinkError(text){
+  __passwordRecoveryMode = true;
+  console.log('[AUTH] recovery mode', 'ошибка ссылки:', text);
+  applyPasswordRecoveryUi();
+  const t = document.getElementById('recoveryTitle');
+  const h = document.getElementById('recoveryHint');
+  if(t) t.textContent = 'Ссылка восстановления недействительна';
+  if(h) h.textContent = text || 'Срок действия ссылки истёк или она уже использована. Запросите новое письмо восстановления пароля.';
+  ['recoveryPassword1','recoveryPassword2','recoveryPasswordBtn'].forEach(id=>{
+    const el = document.getElementById(id); if(el) el.style.display = 'none';
+  });
+  const back = document.getElementById('recoveryBackRow'); if(back) back.style.display = 'block';
+  if(typeof showScreen === 'function') showScreen('login');
+}
+
 function hidePasswordRecovery(){
   __passwordRecoveryMode = false;
+  clearRecoveryFlag();
   const box = document.getElementById('passwordRecoveryBox');
   if(box) box.style.display = 'none';
   document.querySelectorAll('#screen-login .role-btn').forEach(el=>{ el.style.display=''; });
   const sub = document.querySelector('#screen-login .login-sub');
   if(sub) sub.textContent = 'журнал строительства · выберите роль';
+  // возврат стандартного вида формы (если до этого показывали ошибку ссылки)
+  const t = document.getElementById('recoveryTitle');
+  const h = document.getElementById('recoveryHint');
+  if(t) t.textContent = 'Восстановление доступа';
+  if(h) h.textContent = 'Ссылка восстановления подтверждена. Придумайте новый пароль для входа директора по строительству.';
+  ['recoveryPassword1','recoveryPassword2','recoveryPasswordBtn'].forEach(id=>{
+    const el = document.getElementById(id); if(el) el.style.display = '';
+  });
+  const back = document.getElementById('recoveryBackRow'); if(back) back.style.display = 'none';
+  const msg = document.getElementById('recoveryPasswordMsg'); if(msg){ msg.className='save-msg'; msg.textContent=''; }
+}
+
+function setRecoveryBtnBusy(busy){
+  const btn = document.getElementById('recoveryPasswordBtn');
+  if(!btn) return;
+  btn.style.pointerEvents = busy ? 'none' : '';
+  btn.style.opacity = busy ? '0.55' : '';
+  btn.textContent = busy ? 'Сохраняем…' : 'Сохранить новый пароль';
 }
 
 async function saveRecoveredPassword(){
@@ -1767,97 +1932,137 @@ async function saveRecoveredPassword(){
     return;
   }
 
+  setRecoveryBtnBusy(true);
   try{
     if(msg){ msg.className='save-msg'; msg.textContent='Сохраняем…'; }
     const { data: sessionData } = await db.auth.getSession();
     if(!sessionData || !sessionData.session){
+      console.log('[AUTH] session', 'нет — обновить пароль нельзя');
       if(msg){ msg.className='save-msg err'; msg.textContent='Ссылка восстановления недействительна или истекла. Запросите новую.'; }
+      setRecoveryBtnBusy(false);
       return;
     }
     const { error } = await db.auth.updateUser({ password });
     if(error) throw error;
 
-    if(msg){ msg.className='save-msg ok'; msg.textContent='Пароль изменён. Теперь можно войти директором.'; }
+    console.log('[AUTH] пароль успешно изменён');
+    if(msg){ msg.className='save-msg ok'; msg.textContent='Пароль успешно изменён. Теперь можно войти директором.'; }
     if(p1) p1.value='';
     if(p2) p2.value='';
 
+    /* Сначала снимаем признак recovery, только потом закрываем сессию: иначе событие
+       SIGNED_OUT ещё раз прогнало бы проверку и попыталось вернуть форму. */
+    clearRecoveryFlag();
+    __passwordRecoveryMode = false;
+    window.__DB_RECOVERY_EVENT_SEEN = false;
+    window.__DB_RECOVERY_FROM_URL = false;
     await db.auth.signOut();
-    try{ sessionStorage.removeItem('dailybuild:pending-password-recovery'); }catch(e){}
     try{
       history.replaceState({}, document.title, window.location.origin + window.location.pathname);
     }catch(e){}
     setTimeout(()=>{
       hidePasswordRecovery();
+      setRecoveryBtnBusy(false);
       const btn=document.getElementById('roleBtn-director');
       if(btn) startLogin('director');
-    }, 900);
+      const lm = document.getElementById('login-msg');
+      if(lm){ lm.className='save-msg ok'; lm.textContent='Пароль успешно изменён — войдите новым паролем'; }
+    }, 1300);
   }catch(err){
-    console.error('Password recovery update error:', err);
+    console.error('[AUTH] Password recovery update error:', err && err.message ? err.message : err);
     if(msg){ msg.className='save-msg err'; msg.textContent='Не удалось изменить пароль. Запросите новую ссылку восстановления.'; }
+    setRecoveryBtnBusy(false);
   }
 }
 
+/* ---- Определение recovery-режима ----------------------------------------------
+   Признак recovery берётся ТОЛЬКО из штатных сигналов Supabase Auth v2:
+     1) type=recovery в исходном URL (снимок снят в <head> до createClient);
+     2) событие PASSWORD_RECOVERY из onAuthStateChange (подписка тоже в <head>);
+     3) отметка в sessionStorage — переживает redirect и перезагрузку страницы.
+   Наличие обычной сохранённой сессии директора recovery-режимом НЕ считается. */
 function initSupabaseRecoveryListener(){
-  if(!window.dailyBuildSupabase) return;
-
-  const RECOVERY_FLAG = 'dailybuild:pending-password-recovery';
-  const href = window.location.href;
-  const looksLikeRecovery = /type=recovery|error_code=otp_expired|access_token=|refresh_token=|code=/.test(href);
-
-  // Если браузер ещё показывает recovery-параметры — запоминаем это ДО того,
-  // как Supabase успеет обменять code/token и очистить адресную строку.
-  if(looksLikeRecovery){
-    try{ sessionStorage.setItem(RECOVERY_FLAG, '1'); }catch(e){}
+  if(!window.dailyBuildSupabase){
+    console.warn('[AUTH] Supabase недоступен — recovery-режим не проверяется');
+    return;
   }
 
-  db.auth.onAuthStateChange((event, session)=>{
+  const linkError = window.__DB_RECOVERY_LINK_ERROR || '';
+  if(linkError){
+    clearRecoveryFlag();
+    showRecoveryLinkError('Срок действия ссылки истёк или она уже использована. Запросите новое письмо восстановления пароля.');
+    return;
+  }
+
+  const recoveryPending = () =>
+    !!window.__DB_RECOVERY_FROM_URL || !!window.__DB_RECOVERY_EVENT_SEEN || recoveryFlagActive();
+
+  console.log('[AUTH] recovery mode (стартовая проверка)', recoveryPending(),
+              '| из URL:', !!window.__DB_RECOVERY_FROM_URL,
+              '| событие:', !!window.__DB_RECOVERY_EVENT_SEEN,
+              '| отметка:', recoveryFlagActive());
+
+  // Живой обработчик событий + разбор очереди событий, случившихся до готовности UI.
+  window.__dbOnAuthEvent = function(event, session){
     if(event === 'PASSWORD_RECOVERY'){
-      try{ sessionStorage.setItem(RECOVERY_FLAG, '1'); }catch(e){}
+      setRecoveryFlag();
+      window.__DB_RECOVERY_EVENT_SEEN = true;
       setTimeout(showPasswordRecovery, 0);
       return;
     }
-
-    // В Safari событие PASSWORD_RECOVERY иногда уже прошло к моменту запуска
-    // основного приложения. Если recovery-флаг сохранён и сессия появилась,
-    // показываем форму принудительно.
-    let pending = false;
-    try{ pending = sessionStorage.getItem(RECOVERY_FLAG) === '1'; }catch(e){}
-    if(pending && session && session.user){
+    // Сессия появилась (INITIAL_SESSION/SIGNED_IN/TOKEN_REFRESHED) при активной отметке
+    // recovery — Safari нередко «съедает» само событие PASSWORD_RECOVERY.
+    if(session && session.user && recoveryPending() && !currentUser){
       setTimeout(showPasswordRecovery, 0);
     }
-  });
+  };
+  const queued = window.__DB_AUTH_QUEUE || [];
+  window.__DB_AUTH_QUEUE = [];
+  queued.forEach(item=>{ try{ window.__dbOnAuthEvent(item.event, item.session); }catch(e){} });
 
-  // Финальная резервная проверка. Она покрывает сценарий, когда Supabase уже создал
-  // сессию до регистрации onAuthStateChange и успел убрать code/token из URL.
-  setTimeout(async ()=>{
+  /* Финальная проверка: сессия могла быть создана до подписки (быстрый разбор URL) или
+     страница просто перезагружена уже после redirect. getSession() в v2 дожидается
+     внутренней инициализации клиента, поэтому отдельные таймеры-костыли не нужны. */
+  (async ()=>{
     try{
-      const { data, error } = await db.auth.getSession();
-      if(error) return;
-      let pending = false;
-      try{ pending = sessionStorage.getItem(RECOVERY_FLAG) === '1'; }catch(e){}
+      let { data, error } = await db.auth.getSession();
+      if(error){ console.error('[AUTH] getSession error', error.message || error); return; }
 
-      // Если есть явный recovery-признак, показываем форму только при валидной сессии.
-      if((looksLikeRecovery || pending) && data && data.session){
-        showPasswordRecovery();
-        return;
+      /* Подстраховка на случай, если письмо всё-таки пришло в PKCE-формате (?code=...):
+         клиент настроен на implicit и сам такой адрес не разбирает. Пробуем обменять код
+         вручную; получилось — это точно переход по auth-ссылке (других auth-ссылок,
+         кроме восстановления пароля, приложение не рассылает). */
+      const snap = window.__DB_URL_SNAPSHOT || {};
+      if(!(data && data.session) && snap.hasCode && typeof db.auth.exchangeCodeForSession === 'function'){
+        try{
+          const code = new URLSearchParams(snap.search).get('code');
+          const ex = await db.auth.exchangeCodeForSession(code);
+          if(ex && ex.data && ex.data.session){
+            console.log('[AUTH] PKCE-код обменян на сессию');
+            setRecoveryFlag();
+            window.__DB_RECOVERY_FROM_URL = true;
+            data = ex.data && ex.data.session ? {session: ex.data.session} : data;
+            try{ history.replaceState({}, document.title, location.origin + location.pathname); }catch(e){}
+          } else {
+            console.warn('[AUTH] обменять PKCE-код не удалось', ex && ex.error && ex.error.message);
+          }
+        }catch(e){ console.warn('[AUTH] exchangeCodeForSession error', e && e.message ? e.message : e); }
       }
 
-      // Дополнительная страховка для dashboard-generated recovery links:
-      // если сайт открыт сразу после auth-redirect, Supabase уже создал сессию,
-      // но интерфейс Daily Build ещё не авторизован. В этом случае предлагаем
-      // завершить восстановление пароля вместо обычного экрана ролей.
-      if(data && data.session && !currentUser){
-        const ref = document.referrer || '';
-        const fromSupabase = /supabase\.co|supabase\.com/i.test(ref);
-        if(fromSupabase){
-          try{ sessionStorage.setItem(RECOVERY_FLAG, '1'); }catch(e){}
-          showPasswordRecovery();
-        }
+      const has = !!(data && data.session);
+      console.log('[AUTH] session', has ? 'есть' : 'нет', '| recovery mode', recoveryPending());
+      if(!recoveryPending()) return;
+      if(has){
+        showPasswordRecovery();
+      } else {
+        // Признак recovery есть, а сессии нет — ссылка не сработала (протухла/открыта
+        // в другом браузере). Явно объясняем это вместо молчаливого экрана ролей.
+        showRecoveryLinkError('Ссылка восстановления недействительна, истекла или открыта в другом браузере. Запросите новое письмо.');
       }
     }catch(e){
-      console.error('Recovery session check failed:', e);
+      console.error('[AUTH] Recovery session check failed:', e);
     }
-  }, 500);
+  })();
 }
 
 /* ================= AUTH / ROLES ================= */
@@ -1874,6 +2079,9 @@ const LOGIN_TEST_MODE = true;
 window.__roleOpen = null;
 /* Раскрытие происходит ВНУТРИ самой кнопки роли: никаких prompt/alert и отдельных окон. */
 function startLogin(role){
+  // Во время восстановления пароля вход по ролям недоступен (кнопки скрыты, но вызов
+  // возможен из кода) — сначала нужно задать новый пароль.
+  if(__passwordRecoveryMode && role!=='director') return;
   if(window.__roleOpen === role){ const el=document.getElementById('login-pass'); if(el) el.focus(); return; }
   closeRoleLogin();
   window.__roleOpen = role;
@@ -1944,7 +2152,7 @@ async function checkPassword(role){
       });
 
       if(error){
-        console.error('Supabase auth error:', error);
+        console.error('[AUTH] signInWithPassword error:', error.message || error);
         if(msg){
           msg.className = 'save-msg err';
           msg.textContent = 'Неверный пароль';
@@ -1969,7 +2177,7 @@ async function checkPassword(role){
         .single();
 
       if(memberError){
-        console.error('Project member error:', memberError);
+        console.error('[AUTH] project_members lookup error:', memberError.message || memberError);
         await db.auth.signOut();
         if(msg){
           msg.className = 'save-msg err';
@@ -1994,13 +2202,13 @@ async function checkPassword(role){
         projectId: member.project_id
       };
 
-      console.log('Supabase Auth OK:', data.user.email);
-      console.log('Project member:', member);
+      console.log('[AUTH] вход директора подтверждён, user id:', data.user.id);
+      console.log('[AUTH] project_members:', {project_id: member.project_id, role: member.role, is_active: member.is_active});
 
       closeRoleLogin();
       finishLogin();
     }catch(err){
-      console.error('Director login failed:', err);
+      console.error('[AUTH] Director login failed:', err && err.message ? err.message : err);
       if(msg){
         msg.className = 'save-msg err';
         msg.textContent = 'Ошибка подключения к серверу';
@@ -2043,7 +2251,7 @@ function selectResponsibleName(name){
   currentUser = {role:'responsible', name};
   finishLogin();
 }
-function selectViewer(){ currentUser = {role:'viewer', name:''}; finishLogin(); }
+function selectViewer(){ if(__passwordRecoveryMode) return; currentUser = {role:'viewer', name:''}; finishLogin(); }
 function finishLogin(){
   closeSheet();
   renderTopbarUser();
@@ -2065,9 +2273,11 @@ function finishLogin(){
 async function logout(){
   try{
     if(window.dailyBuildSupabase) await db.auth.signOut();
+    console.log('[AUTH] signOut выполнен');
   }catch(err){
-    console.error('Supabase signOut error:', err);
+    console.error('[AUTH] Supabase signOut error:', err);
   }
+  if(typeof clearRecoveryFlag==='function') clearRecoveryFlag();
   currentUser=null; window.__navStack = []; renderTopbarUser(); showScreen('login');
   const rev=document.getElementById('directorReviewActions'); if(rev) rev.innerHTML='';
   renderNavVisibility();
@@ -2577,6 +2787,12 @@ function showScreen(name){
   }
   document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));
   document.getElementById('screen-'+name).classList.add('active');
+  /* Восстановление пароля имеет приоритет: если recovery-режим активен, любой переход на
+     экран логина обязан снова показать форму смены пароля, а не выбор ролей. */
+  if(name==='login' && typeof __passwordRecoveryMode!=='undefined' && __passwordRecoveryMode
+     && typeof applyPasswordRecoveryUi==='function'){
+    applyPasswordRecoveryUi();
+  }
   // Подсветка активной вкладки верхней навигации — по прямому указанию (референс-макет).
   // Не все экраны (напр. график.wall/piles-попапы) соответствуют вкладке — тогда просто
   // ни одна вкладка не подсвечивается, это нормально (карточки/попапы открываются НЕ из
