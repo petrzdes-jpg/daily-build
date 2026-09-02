@@ -6,6 +6,21 @@
 <title>DAILY BUILD — БЦ «Огни»</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700;800&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+
+<script>
+  const SUPABASE_URL = 'https://clzdpbardxhwcnyrrcyg.supabase.co';
+  const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_ocMLfk3myWHftmjToepVrQ_XWG4E-T5';
+  const DB_PROJECT_ID = 1;
+
+  const db = window.supabase.createClient(
+    SUPABASE_URL,
+    SUPABASE_PUBLISHABLE_KEY
+  );
+
+  window.dailyBuildSupabase = db;
+</script>
+
 <script>
   /* Применяем сохранённую тему ДО отрисовки страницы (синхронно, отдельным крошечным
      скриптом в самом начале <head>) — иначе между первой отрисовкой в теме по умолчанию
@@ -1233,6 +1248,14 @@
           </svg></div>
       <div class="login-title">DAILY BUILD</div>
       <div class="login-sub">журнал строительства · выберите роль</div>
+      <div id="passwordRecoveryBox" style="display:none; margin:18px 0 14px; padding:16px; border:1px solid var(--amber); border-radius:10px; background:var(--amber-dim); text-align:left;">
+        <div style="font-family:'Barlow Condensed'; font-size:18px; font-weight:700; margin-bottom:6px;">Задать новый пароль</div>
+        <div style="font-size:12px; color:var(--text-muted); line-height:1.45; margin-bottom:12px;">Ссылка восстановления подтверждена. Придумайте новый пароль для входа директора по строительству.</div>
+        <input type="password" id="recoveryPassword1" autocomplete="new-password" placeholder="Новый пароль" style="width:100%; margin-bottom:8px; background:var(--surface-2); border:1px solid var(--line); border-radius:6px; color:var(--text); padding:10px 11px; font-size:14px;">
+        <input type="password" id="recoveryPassword2" autocomplete="new-password" placeholder="Повторите новый пароль" style="width:100%; margin-bottom:10px; background:var(--surface-2); border:1px solid var(--line); border-radius:6px; color:var(--text); padding:10px 11px; font-size:14px;">
+        <div class="btn primary" style="width:100%; justify-content:center;" onclick="saveRecoveredPassword()">Сохранить новый пароль</div>
+        <div class="save-msg" id="recoveryPasswordMsg" style="margin-top:8px;"></div>
+      </div>
       <!-- Пароль вводится ПРЯМО В КНОПКЕ роли: кнопка раскрывается, поле появляется внутри
            неё. Никаких prompt/alert и отдельных модальных окон. -->
       <div class="role-btn" id="roleBtn-responsible" onclick="startLogin('responsible')">
@@ -1699,6 +1722,99 @@ function renderThemeToggle(){
   el.title = 'Переключить тему оформления';
 }
 
+/* ================= SUPABASE PASSWORD RECOVERY ================= */
+let __passwordRecoveryMode = false;
+
+function showPasswordRecovery(){
+  __passwordRecoveryMode = true;
+  const box = document.getElementById('passwordRecoveryBox');
+  if(box) box.style.display = 'block';
+  document.querySelectorAll('#screen-login .role-btn').forEach(el=>{ el.style.display='none'; });
+  const sub = document.querySelector('#screen-login .login-sub');
+  if(sub) sub.textContent = 'Восстановление доступа директора';
+  if(typeof showScreen === 'function') showScreen('login');
+  setTimeout(()=>{ const el=document.getElementById('recoveryPassword1'); if(el) el.focus(); }, 50);
+}
+
+function hidePasswordRecovery(){
+  __passwordRecoveryMode = false;
+  const box = document.getElementById('passwordRecoveryBox');
+  if(box) box.style.display = 'none';
+  document.querySelectorAll('#screen-login .role-btn').forEach(el=>{ el.style.display=''; });
+  const sub = document.querySelector('#screen-login .login-sub');
+  if(sub) sub.textContent = 'журнал строительства · выберите роль';
+}
+
+async function saveRecoveredPassword(){
+  const p1 = document.getElementById('recoveryPassword1');
+  const p2 = document.getElementById('recoveryPassword2');
+  const msg = document.getElementById('recoveryPasswordMsg');
+  const password = p1 ? p1.value : '';
+  const confirm = p2 ? p2.value : '';
+
+  if(password.length < 8){
+    if(msg){ msg.className='save-msg err'; msg.textContent='Пароль должен содержать минимум 8 символов'; }
+    if(p1) p1.focus();
+    return;
+  }
+  if(password !== confirm){
+    if(msg){ msg.className='save-msg err'; msg.textContent='Пароли не совпадают'; }
+    if(p2){ p2.focus(); p2.select(); }
+    return;
+  }
+  if(!window.dailyBuildSupabase){
+    if(msg){ msg.className='save-msg err'; msg.textContent='Нет подключения к Supabase'; }
+    return;
+  }
+
+  try{
+    if(msg){ msg.className='save-msg'; msg.textContent='Сохраняем…'; }
+    const { data: sessionData } = await db.auth.getSession();
+    if(!sessionData || !sessionData.session){
+      if(msg){ msg.className='save-msg err'; msg.textContent='Ссылка восстановления недействительна или истекла. Запросите новую.'; }
+      return;
+    }
+    const { error } = await db.auth.updateUser({ password });
+    if(error) throw error;
+
+    if(msg){ msg.className='save-msg ok'; msg.textContent='Пароль изменён. Теперь можно войти директором.'; }
+    if(p1) p1.value='';
+    if(p2) p2.value='';
+
+    await db.auth.signOut();
+    try{
+      history.replaceState({}, document.title, window.location.origin + window.location.pathname);
+    }catch(e){}
+    setTimeout(()=>{
+      hidePasswordRecovery();
+      const btn=document.getElementById('roleBtn-director');
+      if(btn) startLogin('director');
+    }, 900);
+  }catch(err){
+    console.error('Password recovery update error:', err);
+    if(msg){ msg.className='save-msg err'; msg.textContent='Не удалось изменить пароль. Запросите новую ссылку восстановления.'; }
+  }
+}
+
+function initSupabaseRecoveryListener(){
+  if(!window.dailyBuildSupabase) return;
+  db.auth.onAuthStateChange((event, session)=>{
+    if(event === 'PASSWORD_RECOVERY'){
+      setTimeout(showPasswordRecovery, 0);
+    }
+  });
+
+  // Резервная проверка: после обработки recovery-ссылки Supabase уже может создать сессию
+  // до регистрации listener. Наличие recovery-параметров в URL используем только как сигнал.
+  const href = window.location.href;
+  const looksLikeRecovery = /type=recovery|error_code=otp_expired|access_token=|code=/.test(href);
+  if(looksLikeRecovery){
+    db.auth.getSession().then(({data})=>{
+      if(data && data.session) showPasswordRecovery();
+    }).catch(()=>{});
+  }
+}
+
 /* ================= AUTH / ROLES ================= */
 const ROLE_PASSWORDS = {responsible:'1', director:'1'};
 const ROLE_LABELS = {responsible:'Ответственный техзаказчика', director:'Директор по строительству', viewer:'Просмотр отчёта'};
@@ -1723,7 +1839,7 @@ function startLogin(role){
   box.innerHTML = `
     <div class="role-pass-lbl">Введите пароль</div>
     <div class="role-pass-row">
-      <input type="password" id="login-pass" inputmode="numeric" autocomplete="off" placeholder="••••"
+      <input type="password" id="login-pass" inputmode="text" autocomplete="off" placeholder="••••"
         onclick="event.stopPropagation();" onkeydown="rolePassKey(event, '${role}')">
       <span class="btn primary role-pass-go" onclick="event.stopPropagation(); checkPassword('${role}')">Войти</span>
     </div>
@@ -1740,18 +1856,113 @@ function closeRoleLogin(){
   document.querySelectorAll('.role-btn.open').forEach(b=>b.classList.remove('open'));
   document.querySelectorAll('.role-pass').forEach(b=>{ b.innerHTML=''; });
 }
-function checkPassword(role){
+async function checkPassword(role){
   const el = document.getElementById('login-pass');
-  const val = el ? el.value : '';
-  if(!LOGIN_TEST_MODE && val !== ROLE_PASSWORDS[role]){
-    const m = document.getElementById('login-msg');
-    if(m){ m.className='save-msg err'; m.textContent='Неверный пароль'; }
-    if(el){ el.focus(); el.select(); }
+  const password = el ? el.value : '';
+  const msg = document.getElementById('login-msg');
+
+  // Технический заказчик пока остаётся на существующей локальной логике.
+  if(role === 'responsible'){
+    closeRoleLogin();
+    askResponsibleName();
     return;
   }
-  closeRoleLogin();
-  if(role==='responsible') askResponsibleName();
-  else{ currentUser = {role:'director', name:''}; finishLogin(); }
+
+  // Директор входит только через Supabase Auth.
+  if(role === 'director'){
+    if(!password){
+      if(msg){
+        msg.className = 'save-msg err';
+        msg.textContent = 'Введите пароль';
+      }
+      if(el) el.focus();
+      return;
+    }
+
+    if(!window.dailyBuildSupabase){
+      if(msg){
+        msg.className = 'save-msg err';
+        msg.textContent = 'Нет подключения к Supabase';
+      }
+      return;
+    }
+
+    try{
+      if(msg){
+        msg.className = 'save-msg';
+        msg.textContent = 'Проверка…';
+      }
+
+      const { data, error } = await db.auth.signInWithPassword({
+        email: 'kiyukovp@yandex.ru',
+        password
+      });
+
+      if(error){
+        console.error('Supabase auth error:', error);
+        if(msg){
+          msg.className = 'save-msg err';
+          msg.textContent = 'Неверный пароль';
+        }
+        if(el){
+          el.focus();
+          el.select();
+        }
+        return;
+      }
+
+      if(!data || !data.user){
+        throw new Error('Supabase не вернул пользователя');
+      }
+
+      const { data: member, error: memberError } = await db
+        .from('project_members')
+        .select('project_id, full_name, role, is_active')
+        .eq('project_id', DB_PROJECT_ID)
+        .eq('user_id', data.user.id)
+        .eq('is_active', true)
+        .single();
+
+      if(memberError){
+        console.error('Project member error:', memberError);
+        await db.auth.signOut();
+        if(msg){
+          msg.className = 'save-msg err';
+          msg.textContent = 'Пользователь не привязан к проекту';
+        }
+        return;
+      }
+
+      if(member.role !== 'director'){
+        await db.auth.signOut();
+        if(msg){
+          msg.className = 'save-msg err';
+          msg.textContent = 'Нет прав директора';
+        }
+        return;
+      }
+
+      currentUser = {
+        role: 'director',
+        name: member.full_name || 'Директор по строительству',
+        userId: data.user.id,
+        projectId: member.project_id
+      };
+
+      console.log('Supabase Auth OK:', data.user.email);
+      console.log('Project member:', member);
+
+      closeRoleLogin();
+      finishLogin();
+    }catch(err){
+      console.error('Director login failed:', err);
+      if(msg){
+        msg.className = 'save-msg err';
+        msg.textContent = 'Ошибка подключения к серверу';
+      }
+    }
+    return;
+  }
 }
 /* ФИО техзаказчика выбирается из списка, который ведёт директор по строительству
    (настройки проекта → «Представители технического заказчика»), а не вводится
@@ -1806,7 +2017,12 @@ function finishLogin(){
   showScreen(currentUser && currentUser.role==='viewer' ? 'overview'
     : (currentUser && currentUser.role==='responsible' && !isElevatedRep() ? 'dailyreport' : 'main'));
 }
-function logout(){
+async function logout(){
+  try{
+    if(window.dailyBuildSupabase) await db.auth.signOut();
+  }catch(err){
+    console.error('Supabase signOut error:', err);
+  }
   currentUser=null; window.__navStack = []; renderTopbarUser(); showScreen('login');
   const rev=document.getElementById('directorReviewActions'); if(rev) rev.innerHTML='';
   renderNavVisibility();
@@ -14709,6 +14925,7 @@ function watchDateRollover(){
     if(typeof renderDashboardScreen==='function') renderDashboardScreen();
   }, 60000);
 }
+initSupabaseRecoveryListener();
 initApp();
 </script>
 </body>
