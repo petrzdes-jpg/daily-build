@@ -1782,6 +1782,7 @@ async function saveRecoveredPassword(){
     if(p2) p2.value='';
 
     await db.auth.signOut();
+    try{ sessionStorage.removeItem('dailybuild:pending-password-recovery'); }catch(e){}
     try{
       history.replaceState({}, document.title, window.location.origin + window.location.pathname);
     }catch(e){}
@@ -1798,21 +1799,65 @@ async function saveRecoveredPassword(){
 
 function initSupabaseRecoveryListener(){
   if(!window.dailyBuildSupabase) return;
+
+  const RECOVERY_FLAG = 'dailybuild:pending-password-recovery';
+  const href = window.location.href;
+  const looksLikeRecovery = /type=recovery|error_code=otp_expired|access_token=|refresh_token=|code=/.test(href);
+
+  // Если браузер ещё показывает recovery-параметры — запоминаем это ДО того,
+  // как Supabase успеет обменять code/token и очистить адресную строку.
+  if(looksLikeRecovery){
+    try{ sessionStorage.setItem(RECOVERY_FLAG, '1'); }catch(e){}
+  }
+
   db.auth.onAuthStateChange((event, session)=>{
     if(event === 'PASSWORD_RECOVERY'){
+      try{ sessionStorage.setItem(RECOVERY_FLAG, '1'); }catch(e){}
+      setTimeout(showPasswordRecovery, 0);
+      return;
+    }
+
+    // В Safari событие PASSWORD_RECOVERY иногда уже прошло к моменту запуска
+    // основного приложения. Если recovery-флаг сохранён и сессия появилась,
+    // показываем форму принудительно.
+    let pending = false;
+    try{ pending = sessionStorage.getItem(RECOVERY_FLAG) === '1'; }catch(e){}
+    if(pending && session && session.user){
       setTimeout(showPasswordRecovery, 0);
     }
   });
 
-  // Резервная проверка: после обработки recovery-ссылки Supabase уже может создать сессию
-  // до регистрации listener. Наличие recovery-параметров в URL используем только как сигнал.
-  const href = window.location.href;
-  const looksLikeRecovery = /type=recovery|error_code=otp_expired|access_token=|code=/.test(href);
-  if(looksLikeRecovery){
-    db.auth.getSession().then(({data})=>{
-      if(data && data.session) showPasswordRecovery();
-    }).catch(()=>{});
-  }
+  // Финальная резервная проверка. Она покрывает сценарий, когда Supabase уже создал
+  // сессию до регистрации onAuthStateChange и успел убрать code/token из URL.
+  setTimeout(async ()=>{
+    try{
+      const { data, error } = await db.auth.getSession();
+      if(error) return;
+      let pending = false;
+      try{ pending = sessionStorage.getItem(RECOVERY_FLAG) === '1'; }catch(e){}
+
+      // Если есть явный recovery-признак, показываем форму только при валидной сессии.
+      if((looksLikeRecovery || pending) && data && data.session){
+        showPasswordRecovery();
+        return;
+      }
+
+      // Дополнительная страховка для dashboard-generated recovery links:
+      // если сайт открыт сразу после auth-redirect, Supabase уже создал сессию,
+      // но интерфейс Daily Build ещё не авторизован. В этом случае предлагаем
+      // завершить восстановление пароля вместо обычного экрана ролей.
+      if(data && data.session && !currentUser){
+        const ref = document.referrer || '';
+        const fromSupabase = /supabase\.co|supabase\.com/i.test(ref);
+        if(fromSupabase){
+          try{ sessionStorage.setItem(RECOVERY_FLAG, '1'); }catch(e){}
+          showPasswordRecovery();
+        }
+      }
+    }catch(e){
+      console.error('Recovery session check failed:', e);
+    }
+  }, 500);
 }
 
 /* ================= AUTH / ROLES ================= */
